@@ -93,8 +93,15 @@ class TastytradeClient:
 
     def login(self):
         url = f"{TT_BASE_URL}/sessions"
-        payload = {"login": TT_USERNAME, "password": TT_PASSWORD}
+        remember_token = os.getenv("TT_REMEMBER_TOKEN", "")
+        if remember_token:
+            payload = {"login": TT_USERNAME, "remember-token": remember_token, "remember-me": True}
+        else:
+            payload = {"login": TT_USERNAME, "password": TT_PASSWORD, "remember-me": True}
         r = requests.post(url, json=payload, headers=self.headers)
+        if r.status_code == 403:
+            raise Exception(f"Login failed: {r.status_code} {r.text}\n"
+                            "Device challenge required — run: python auth.py locally, then add TT_REMEMBER_TOKEN to Railway.")
         if r.status_code not in (200, 201):
             raise Exception(f"Login failed: {r.status_code} {r.text}")
         data = r.json()["data"]
