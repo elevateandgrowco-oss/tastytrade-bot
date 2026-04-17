@@ -483,10 +483,14 @@ def main():
         print("❌ TT_USERNAME and TT_PASSWORD must be set"); sys.exit(1)
 
     tt = TastytradeClient()
-    try:
-        tt.login()
-    except Exception as e:
-        print(f"❌ Login failed: {e}"); sys.exit(1)
+    while True:
+        try:
+            tt.login()
+            break
+        except Exception as e:
+            print(f"❌ Login failed: {e}")
+            print("⏳ Waiting 5 minutes before retrying...")
+            time.sleep(300)
 
     try:
         mes_symbol = tt.get_mes_symbol()
@@ -517,8 +521,10 @@ def main():
         except Exception as e:
             print(f"❌ Error: {e}")
             if "401" in str(e) or "session" in str(e).lower():
+                print("⏳ Session expired — waiting 5 min before re-login...")
+                time.sleep(300)
                 try: tt.login()
-                except: pass
+                except Exception as le: print(f"❌ Re-login failed: {le}")
         time.sleep(60)
 
 if __name__=="__main__":
