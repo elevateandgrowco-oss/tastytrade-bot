@@ -59,6 +59,11 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self,*a): pass
 
     def do_GET(self):
+        if self.path=="/token":
+            tok=auth.get("session_token") or ""
+            self.send_response(200); self.send_header("Content-Type","text/plain"); self.end_headers()
+            self.wfile.write(tok.encode()); return
+
         step=auth["step"]
         if step=="device_code":
             msg="<h2>Step 1 of 2: Device Verification</h2><p>Enter the SMS code Tastytrade sent to your phone:</p>"
