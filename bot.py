@@ -42,26 +42,45 @@ class Bar:
         self.date=date;self.open=open_;self.high=high;self.low=low;self.close=close;self.volume=volume
 
 _bar_cache={"bars":[],"ts":0}
-def fetch_bars(interval="5m",period="2d"):
+
+def fetch_bars_tt(sym, minutes=5, days=2):
+    """Fetch OHLCV bars from Tastytrade market data API (no rate limit issues)."""
+    try:
+        from datetime import timedelta
+        end=datetime.now(timezone.utc)
+        start=end-timedelta(days=days)
+        r=requests.get(f"{TT_BASE_URL}/market-data/history",
+            params={"symbol":sym,"start-time":start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "end-time":end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "interval-type":"Minute","interval-value":str(minutes)},
+            headers=get_headers())
+        if r.status_code!=200: print(f"⚠️ TT data:{r.status_code} {r.text[:200]}"); return []
+        items=r.json()["data"]["items"]
+        bars=[Bar(i.get("time",""),float(i.get("open",0)),float(i.get("high",0)),
+                  float(i.get("low",0)),float(i.get("close",0)),int(i.get("volume",0))) for i in items]
+        print(f"  📊 TT data: {len(bars)} bars"); return bars
+    except Exception as e: print(f"⚠️ TT data:{e}"); return []
+
+def fetch_bars(sym=None, interval="5m", period="2d"):
     global _bar_cache
-    # Cache for 4.5 min — 5m bars don't change faster, avoids Yahoo rate limits
     if _bar_cache["bars"] and time.time()-_bar_cache["ts"]<270:
         return _bar_cache["bars"]
-    try:
-        df=yf.download("MES=F",period=period,interval=interval,progress=False,auto_adjust=True)
-        if df.empty: df=yf.download("ES=F",period=period,interval=interval,progress=False,auto_adjust=True)
-        if df.empty: return _bar_cache["bars"]
-        bars=[]
-        for ts,row in df.iterrows():
-            def _v(col):
-                v=row[col]; return float(v.iloc[0] if hasattr(v,"iloc") else v)
-            bars.append(Bar(str(ts),_v("Open"),_v("High"),_v("Low"),_v("Close"),int(_v("Volume"))))
-        _bar_cache={"bars":bars,"ts":time.time()}
-        return bars
-    except Exception as e:
-        print(f"⚠️ yfinance:{e}")
-        if _bar_cache["bars"]: print("  ↩️ Using cached bars"); return _bar_cache["bars"]
-        return []
+    # Try Tastytrade first, fall back to yfinance
+    bars=fetch_bars_tt(sym) if sym else []
+    if not bars:
+        try:
+            df=yf.download("MES=F",period=period,interval=interval,progress=False,auto_adjust=True)
+            if df.empty: df=yf.download("ES=F",period=period,interval=interval,progress=False,auto_adjust=True)
+            if not df.empty:
+                for ts,row in df.iterrows():
+                    def _v(col):
+                        v=row[col]; return float(v.iloc[0] if hasattr(v,"iloc") else v)
+                    bars.append(Bar(str(ts),_v("Open"),_v("High"),_v("Low"),_v("Close"),int(_v("Volume"))))
+        except Exception as e:
+            print(f"⚠️ yfinance:{e}")
+    if bars: _bar_cache={"bars":bars,"ts":time.time()}
+    elif _bar_cache["bars"]: print("  ↩️ Using cached bars"); return _bar_cache["bars"]
+    return bars
 
 # ── Web server ─────────────────────────────────────────────────────────────────
 class Handler(BaseHTTPRequestHandler):
@@ -227,9 +246,9 @@ def vwap(bars):
 def avgvol(bars,p=20):
     v=[b.volume for b in bars[-p:] if b.volume>0]; return sum(v)/len(v) if v else 0
 
-def bias15m():
+def bias15m(sym=None):
     try:
-        bars=fetch_bars("15m","5d")
+        bars=fetch_bars(sym,"15m","5d")
         if len(bars)<EMA_PERIOD: return None
         c=[b.close for b in bars]; e=ema(c,EMA_PERIOD)
         return "bull" if c[-1]>e else "bear"
@@ -361,7 +380,7 @@ def main():
 
     while True:
         try:
-            bars=fetch_bars("5m","2d")
+            bars=fetch_bars(sym)
             if bars and len(bars)>=2:
                 done=bars[:-1]; bt=done[-1].date
                 if bt!=last: last=bt; on_bar(done,acct,sym)
