@@ -12,11 +12,13 @@ from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import parse_qs
 
-TT_BASE_URL  = os.getenv("TT_BASE_URL", "https://api.tastytrade.com")
-TT_USERNAME  = os.getenv("TT_USERNAME", "")
-TT_PASSWORD  = os.getenv("TT_PASSWORD", "")
-PORT         = int(os.getenv("PORT", "8080"))
-SESSION_FILE = "session.json"
+TT_BASE_URL   = os.getenv("TT_BASE_URL", "https://api.tastytrade.com")
+TT_USERNAME   = os.getenv("TT_USERNAME", "")
+TT_PASSWORD   = os.getenv("TT_PASSWORD", "")
+PORT          = int(os.getenv("PORT", "8080"))
+SESSION_FILE  = "session.json"
+# Env-var fallback so session survives Railway restarts (set TT_SESSION_TOKEN in Railway vars)
+TT_SESSION_TOKEN_ENV = os.getenv("TT_SESSION_TOKEN", "")
 
 MAX_TRADES_PER_DAY=3; CONTRACTS=1; EMA_PERIOD=20; RSI_PERIOD=3
 ATR_PERIOD=14; ATR_STOP_MULT=1.5; MIN_STOP_POINTS=2.0; MAX_STOP_POINTS=10.0
@@ -154,8 +156,9 @@ def get_headers():
 def get_account():
     r=requests.get(f"{TT_BASE_URL}/customers/me/accounts",headers=get_headers()); r.raise_for_status()
     accounts=r.json()["data"]["items"]
+    if not accounts: raise Exception("No accounts found — account may still be pending setup")
     for a in accounts:
-        if a["account"]["margin-or-cash"]=="Margin": return a["account"]["account-number"]
+        if a["account"].get("margin-or-cash")=="Margin": return a["account"]["account-number"]
     return accounts[0]["account"]["account-number"]
 
 def get_mes_position(acct):
@@ -309,8 +312,8 @@ def main():
     print("="*55)
     start_web_server()
 
-    # Try saved session first
-    saved=load_session()
+    # Try saved session first (file → env var fallback for Railway restarts)
+    saved=load_session() or TT_SESSION_TOKEN_ENV or None
     if saved:
         auth["session_token"]=saved; auth["step"]="done"; auth["ready"].set()
         print("✅ Using saved session token")
@@ -325,10 +328,19 @@ def main():
 
     auth["ready"].wait()
 
-    try: acct=get_account(); print(f"✅ Account:{acct}")
-    except Exception as e: print(f"❌ Account:{e}"); sys.exit(1)
-    try: sym=get_mes_symbol()
-    except Exception as e: print(f"❌ MES:{e}"); sys.exit(1)
+    acct=None
+    while not acct:
+        try: acct=get_account(); print(f"✅ Account:{acct}")
+        except Exception as e:
+            print(f"❌ Account:{e} — retrying in 5 min (account may still be activating)")
+            time.sleep(300)
+
+    sym=None
+    while not sym:
+        try: sym=get_mes_symbol()
+        except Exception as e:
+            print(f"❌ MES symbol:{e} — retrying in 5 min")
+            time.sleep(300)
 
     print(f"\n📡 Polling every 60s...\n")
     last=None; refresh=time.time()
