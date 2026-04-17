@@ -41,18 +41,27 @@ class Bar:
     def __init__(self,date,open_,high,low,close,volume):
         self.date=date;self.open=open_;self.high=high;self.low=low;self.close=close;self.volume=volume
 
+_bar_cache={"bars":[],"ts":0}
 def fetch_bars(interval="5m",period="2d"):
+    global _bar_cache
+    # Cache for 4.5 min — 5m bars don't change faster, avoids Yahoo rate limits
+    if _bar_cache["bars"] and time.time()-_bar_cache["ts"]<270:
+        return _bar_cache["bars"]
     try:
         df=yf.download("MES=F",period=period,interval=interval,progress=False,auto_adjust=True)
         if df.empty: df=yf.download("ES=F",period=period,interval=interval,progress=False,auto_adjust=True)
-        if df.empty: return []
+        if df.empty: return _bar_cache["bars"]
         bars=[]
         for ts,row in df.iterrows():
             def _v(col):
                 v=row[col]; return float(v.iloc[0] if hasattr(v,"iloc") else v)
             bars.append(Bar(str(ts),_v("Open"),_v("High"),_v("Low"),_v("Close"),int(_v("Volume"))))
+        _bar_cache={"bars":bars,"ts":time.time()}
         return bars
-    except Exception as e: print(f"⚠️ yfinance:{e}"); return []
+    except Exception as e:
+        print(f"⚠️ yfinance:{e}")
+        if _bar_cache["bars"]: print("  ↩️ Using cached bars"); return _bar_cache["bars"]
+        return []
 
 # ── Web server ─────────────────────────────────────────────────────────────────
 class Handler(BaseHTTPRequestHandler):
