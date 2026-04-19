@@ -17,6 +17,11 @@ TT_USERNAME   = os.getenv("TT_USERNAME", "")
 TT_PASSWORD   = os.getenv("TT_PASSWORD", "")
 PORT          = int(os.getenv("PORT", "8080"))
 
+TWILIO_SID    = os.getenv("TWILIO_ACCOUNT_SID", "")
+TWILIO_TOKEN  = os.getenv("TWILIO_AUTH_TOKEN", "")
+TWILIO_FROM   = os.getenv("TWILIO_PHONE", "")
+ALERT_TO      = os.getenv("ALERT_PHONE", os.getenv("OWNER_PHONE", "+14017716184"))
+
 # DATA_DIR — persists trades and session to Railway volume
 DATA_DIR      = os.getenv("DATA_DIR", ".")
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -50,6 +55,18 @@ class Bar:
         self.date=date;self.open=open_;self.high=high;self.low=low;self.close=close;self.volume=volume
 
 _bar_cache={"bars":[],"ts":0}
+
+# ── SMS alerts ─────────────────────────────────────────────────────────────────
+def sms(msg):
+    if not all([TWILIO_SID, TWILIO_TOKEN, TWILIO_FROM, ALERT_TO]): return
+    try:
+        requests.post(
+            f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_SID}/Messages.json",
+            auth=(TWILIO_SID, TWILIO_TOKEN),
+            data={"From": TWILIO_FROM, "To": ALERT_TO, "Body": msg},
+            timeout=10)
+    except Exception as e:
+        print(f"⚠️ SMS failed: {e}")
 
 TWELVE_DATA_KEY = os.getenv("TWELVE_DATA_API_KEY", "")
 
@@ -133,6 +150,21 @@ def start_web_server():
     s=HTTPServer(("0.0.0.0",PORT),Handler)
     threading.Thread(target=s.serve_forever,daemon=True).start()
     print(f"🌐 Web server on port {PORT}")
+
+def start_session_refresh():
+    """Proactively refresh TT session every 20h — before the ~24h expiry."""
+    def _loop():
+        while True:
+            time.sleep(20 * 3600)
+            if auth["step"] != "done": continue
+            print("🔄 Proactive session refresh...")
+            token = try_auto_login()
+            if token:
+                auth["session_token"] = token
+                print("✅ Session refreshed proactively")
+            else:
+                print("⚠️ Proactive refresh failed — will retry on next cycle")
+    threading.Thread(target=_loop, daemon=True).start()
 
 # ── Auth flow ──────────────────────────────────────────────────────────────────
 def save_session(token):
@@ -350,6 +382,8 @@ def on_bar(bars,acct,sym):
             try:
                 place_order(acct,sym,"Sell" if cur>0 else "Buy",abs(cur),cur)
                 if ot: ot.update({"closed":True,"exit_price":price,"exit_reason":ex,"pnl_usd":pnl,"exit_timestamp":datetime.now(timezone.utc).isoformat()}); save_log(log)
+                emoji="✅" if pnl>=0 else "🔴"
+                sms(f"{emoji} MES CLOSED {ex} | {'L' if cur>0 else 'S'} @ {ep:.2f} → {price:.2f} | P&L: ${pnl:+.2f}")
             except Exception as e: print(f"❌ Close:{e}")
         else: print(f"  ✅ Hold — stop:{'BE' if be else f'-{osp}'} target:+{otp}")
         return
@@ -360,7 +394,9 @@ def on_bar(bars,acct,sym):
     # Daily drawdown circuit breaker
     dpnl=todays_pnl(log)
     if dpnl<=-MAX_DAILY_LOSS:
-        print(f"🛑 Daily loss limit hit (${dpnl:.2f}) — no new trades today"); return
+        print(f"🛑 Daily loss limit hit (${dpnl:.2f}) — no new trades today")
+        sms(f"🛑 MES bot hit daily loss limit (${dpnl:.2f}). Done trading for today.")
+        return
 
     if e20 is None or r3 is None: return
     bull=price>e20
@@ -376,6 +412,7 @@ def on_bar(bars,acct,sym):
         oid=place_order(acct,sym,side,CONTRACTS,0)
         log["trades"].append({"timestamp":datetime.now(timezone.utc).isoformat(),"action":side,"symbol":sym,"qty":CONTRACTS,"price":price,"ema20":round(e20,2),"rsi3":round(r3,2),"atr":round(at,2) if at else None,"vwap":round(vw,2) if vw else None,"bias_15m":b15,"stop_pts":round(sp,2),"target_pts":round(tp,2),"breakeven_triggered":False,"closed":False,"order_id":oid,"order_placed":True})
         save_log(log)
+        sms(f"{'📈' if side=='Buy' else '📉'} MES {'LONG' if side=='Buy' else 'SHORT'} @ {price:.2f} | Stop: -{sp:.1f}pts Target: +{tp:.1f}pts")
     except Exception as e: print(f"❌ Order:{e}")
 
 def main():
@@ -385,6 +422,7 @@ def main():
     print(f"  Daily loss limit: ${MAX_DAILY_LOSS}")
     print("="*55)
     start_web_server()
+    start_session_refresh()
 
     # Try saved session → env var → auto re-login → web UI
     saved=load_session() or TT_SESSION_TOKEN_ENV or None
@@ -440,8 +478,10 @@ def main():
                 token=try_auto_login()
                 if token:
                     auth["session_token"]=token; auth["step"]="done"; auth["ready"].set()
+                    sms("🔄 MES bot: session expired, auto re-login successful.")
                 else:
                     auth["step"]="idle"; auth["ready"].clear()
+                    sms(f"⚠️ MES bot: session expired, auto re-login failed. Visit https://tastytrade-bot-production.up.railway.app to re-authorize.")
                     print("🔐 Auto re-login failed — visit web UI to re-authorize")
                     try: do_login()
                     except: time.sleep(300)
