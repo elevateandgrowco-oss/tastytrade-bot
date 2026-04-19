@@ -43,30 +43,31 @@ class Bar:
 
 _bar_cache={"bars":[],"ts":0}
 
-def fetch_bars_tt(sym, minutes=5, days=2):
-    """Fetch OHLCV bars from Tastytrade market data API (no rate limit issues)."""
+TWELVE_DATA_KEY = os.getenv("TWELVE_DATA_API_KEY", "")
+
+def fetch_bars_twelvedata(interval="5min", outputsize=100):
+    """Fetch OHLCV bars from Twelve Data API — free, no Railway rate limits."""
+    if not TWELVE_DATA_KEY: return []
     try:
-        from datetime import timedelta
-        end=datetime.now(timezone.utc)
-        start=end-timedelta(days=days)
-        r=requests.get(f"{TT_BASE_URL}/market-data/history",
-            params={"symbol":sym,"start-time":start.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    "end-time":end.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    "interval-type":"Minute","interval-value":str(minutes)},
-            headers=get_headers())
-        if r.status_code!=200: print(f"⚠️ TT data:{r.status_code} {r.text[:200]}"); return []
-        items=r.json()["data"]["items"]
-        bars=[Bar(i.get("time",""),float(i.get("open",0)),float(i.get("high",0)),
-                  float(i.get("low",0)),float(i.get("close",0)),int(i.get("volume",0))) for i in items]
-        print(f"  📊 TT data: {len(bars)} bars"); return bars
-    except Exception as e: print(f"⚠️ TT data:{e}"); return []
+        r=requests.get("https://api.twelvedata.com/time_series",
+            params={"symbol":"MES","exchange":"CME","interval":interval,
+                    "outputsize":outputsize,"apikey":TWELVE_DATA_KEY,"order":"ASC"})
+        if r.status_code!=200: print(f"⚠️ TwelveData:{r.status_code}"); return []
+        data=r.json()
+        if data.get("status")=="error": print(f"⚠️ TwelveData:{data.get('message')}"); return []
+        bars=[Bar(i["datetime"],float(i["open"]),float(i["high"]),float(i["low"]),
+                  float(i["close"]),int(i.get("volume",0))) for i in data.get("values",[])]
+        print(f"  📊 TwelveData: {len(bars)} bars"); return bars
+    except Exception as e: print(f"⚠️ TwelveData:{e}"); return []
 
 def fetch_bars(sym=None, interval="5m", period="2d"):
     global _bar_cache
     if _bar_cache["bars"] and time.time()-_bar_cache["ts"]<270:
         return _bar_cache["bars"]
-    # Try Tastytrade first, fall back to yfinance
-    bars=fetch_bars_tt(sym) if sym else []
+    # Try Twelve Data first, fall back to yfinance
+    td_interval="15min" if interval=="15m" else "5min"
+    td_size=150 if interval=="15m" else 100
+    bars=fetch_bars_twelvedata(td_interval, td_size)
     if not bars:
         try:
             df=yf.download("MES=F",period=period,interval=interval,progress=False,auto_adjust=True)
