@@ -35,8 +35,12 @@ MAX_TRADES_PER_DAY=3; CONTRACTS=1; EMA_PERIOD=20; RSI_PERIOD=3
 ATR_PERIOD=14; ATR_STOP_MULT=1.5; MIN_STOP_POINTS=2.0; MAX_STOP_POINTS=10.0
 EMA_PROXIMITY_PCT=1.5; VOLUME_MULT=1.2; NEWS_BLOCK_MIN=15
 AVOID_OPEN_MINUTES=15; AVOID_CLOSE_MINUTES=30
-# Daily drawdown limit — stop trading if realized P&L < -$150 today ($5/pt × ~6pts × 3 losers)
+# Daily drawdown limit — stop trading if realized P&L < -$150 today
 MAX_DAILY_LOSS = float(os.getenv("MAX_DAILY_LOSS", "150"))
+# Chop filter — skip entries when ATR is below this (sideways/low-vol market)
+MIN_ATR = float(os.getenv("MIN_ATR", "3.0"))
+# Trailing stop — trail by this many points once trade is in profit (0 = disabled)
+TRAIL_POINTS = float(os.getenv("TRAIL_POINTS", "3.0"))
 NEWS_TIMES_ET=[(8,30),(10,0),(14,0),(14,30)]
 
 # Auth state machine
@@ -54,7 +58,7 @@ class Bar:
     def __init__(self,date,open_,high,low,close,volume):
         self.date=date;self.open=open_;self.high=high;self.low=low;self.close=close;self.volume=volume
 
-_bar_cache={"bars":[],"ts":0}
+_bar_cache={"5m":{"bars":[],"ts":0},"15m":{"bars":[],"ts":0}}
 
 # ── SMS alerts ─────────────────────────────────────────────────────────────────
 def sms(msg):
@@ -87,8 +91,11 @@ def fetch_bars_twelvedata(interval="5min", outputsize=100):
 
 def fetch_bars(sym=None, interval="5m", period="2d"):
     global _bar_cache
-    if _bar_cache["bars"] and time.time()-_bar_cache["ts"]<270:
-        return _bar_cache["bars"]
+    key = "15m" if interval=="15m" else "5m"
+    ttl = 270 if key=="5m" else 600   # 15m bars stale after 10 min
+    cache = _bar_cache[key]
+    if cache["bars"] and time.time()-cache["ts"]<ttl:
+        return cache["bars"]
     # Try Twelve Data first, fall back to yfinance
     td_interval="15min" if interval=="15m" else "5min"
     td_size=150 if interval=="15m" else 100
@@ -104,8 +111,8 @@ def fetch_bars(sym=None, interval="5m", period="2d"):
                     bars.append(Bar(str(ts),_v("Open"),_v("High"),_v("Low"),_v("Close"),int(_v("Volume"))))
         except Exception as e:
             print(f"⚠️ yfinance:{e}")
-    if bars: _bar_cache={"bars":bars,"ts":time.time()}
-    elif _bar_cache["bars"]: print("  ↩️ Using cached bars"); return _bar_cache["bars"]
+    if bars: _bar_cache[key]={"bars":bars,"ts":time.time()}
+    elif cache["bars"]: print("  ↩️ Using cached bars"); return cache["bars"]
     return bars
 
 # ── Web server ─────────────────────────────────────────────────────────────────
@@ -363,11 +370,23 @@ def on_bar(bars,acct,sym):
         ep=ot.get("price",price) if ot else price
         osp=ot.get("stop_pts",sp) if ot else sp; otp=ot.get("target_pts",tp) if ot else tp
         be=ot.get("breakeven_triggered",False) if ot else False
+        trail_high=ot.get("trail_high",ep) if ot else ep   # best price seen since entry
         d=1 if cur>0 else -1; pts=(price-ep)*d; pnl=pts*abs(cur)*5
         print(f"  Open: {'L' if cur>0 else 'S'}{abs(cur)} @ {ep:.2f} P&L:${pnl:.2f}({pts:.2f}pts)")
+
+        # Update trail high/low and move stop up (longs) or down (shorts)
+        if TRAIL_POINTS > 0 and be:
+            new_best = max(trail_high, price) if cur>0 else min(trail_high, price)
+            if new_best != trail_high:
+                if ot: ot["trail_high"]=new_best; save_log(log)
+                trail_high=new_best
+            trail_stop_pts = (trail_high - ep) * d - TRAIL_POINTS
+            osp = max(0.0, trail_stop_pts) if trail_stop_pts > 0 else osp
+
         if not be and pts>=otp/2:
-            if ot: ot["breakeven_triggered"]=True; save_log(log)
-            be=True; print("  🔒 Breakeven")
+            if ot: ot["breakeven_triggered"]=True; ot["trail_high"]=price; save_log(log)
+            be=True; print("  🔒 Breakeven + trail active")
+
         eff=0.0 if be else osp; ex=None
         if cur>0:
             if e20 and price<e20: ex="Below EMA"
@@ -399,6 +418,11 @@ def on_bar(bars,acct,sym):
         return
 
     if e20 is None or r3 is None: return
+
+    # Chop filter — skip if market is too quiet
+    if at and at < MIN_ATR:
+        print(f"🚫 Chop filter: ATR {at:.2f} < {MIN_ATR} — market too quiet"); return
+
     bull=price>e20
     checks=([(f"Above EMA",price>e20),(f"Within {EMA_PROXIMITY_PCT}%",dp<EMA_PROXIMITY_PCT),("RSI<40",r3<40),("Above VWAP",vw is None or price>vw),("15m bull",b15 is None or b15=="bull"),(f"Vol>={VOLUME_MULT}x",av==0 or lv>=av*VOLUME_MULT)]
              if bull else [(f"Below EMA",price<e20),(f"Within {EMA_PROXIMITY_PCT}%",dp<EMA_PROXIMITY_PCT),("RSI>60",r3>60),("Below VWAP",vw is None or price<vw),("15m bear",b15 is None or b15=="bear"),(f"Vol>={VOLUME_MULT}x",av==0 or lv>=av*VOLUME_MULT)])
