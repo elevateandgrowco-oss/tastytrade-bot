@@ -8,7 +8,7 @@ After that: trades automatically. Re-auth only needed if session expires.
 """
 
 import os, sys, json, time, threading, requests, yfinance as yf
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import parse_qs
 
@@ -16,14 +16,22 @@ TT_BASE_URL   = os.getenv("TT_BASE_URL", "https://api.tastytrade.com")
 TT_USERNAME   = os.getenv("TT_USERNAME", "")
 TT_PASSWORD   = os.getenv("TT_PASSWORD", "")
 PORT          = int(os.getenv("PORT", "8080"))
-SESSION_FILE  = "session.json"
-# Env-var fallback so session survives Railway restarts (set TT_SESSION_TOKEN in Railway vars)
+
+# DATA_DIR — persists trades and session to Railway volume
+DATA_DIR      = os.getenv("DATA_DIR", ".")
+os.makedirs(DATA_DIR, exist_ok=True)
+SESSION_FILE  = os.path.join(DATA_DIR, "session.json")
+LOG_FILE      = os.path.join(DATA_DIR, "trades.json")
+
+# Env-var fallback so session survives Railway restarts
 TT_SESSION_TOKEN_ENV = os.getenv("TT_SESSION_TOKEN", "")
 
 MAX_TRADES_PER_DAY=3; CONTRACTS=1; EMA_PERIOD=20; RSI_PERIOD=3
 ATR_PERIOD=14; ATR_STOP_MULT=1.5; MIN_STOP_POINTS=2.0; MAX_STOP_POINTS=10.0
 EMA_PROXIMITY_PCT=1.5; VOLUME_MULT=1.2; NEWS_BLOCK_MIN=15
-AVOID_OPEN_MINUTES=15; AVOID_CLOSE_MINUTES=30; LOG_FILE="trades.json"
+AVOID_OPEN_MINUTES=15; AVOID_CLOSE_MINUTES=30
+# Daily drawdown limit — stop trading if realized P&L < -$150 today ($5/pt × ~6pts × 3 losers)
+MAX_DAILY_LOSS = float(os.getenv("MAX_DAILY_LOSS", "150"))
 NEWS_TIMES_ET=[(8,30),(10,0),(14,0),(14,30)]
 
 # Auth state machine
@@ -135,6 +143,22 @@ def load_session():
         with open(SESSION_FILE) as f: return json.load(f).get("session_token")
     return None
 
+def try_auto_login():
+    """Attempt silent re-login with credentials. Returns token on success, None on failure."""
+    if not TT_USERNAME or not TT_PASSWORD: return None
+    try:
+        r=requests.post(f"{TT_BASE_URL}/sessions",
+            json={"login":TT_USERNAME,"password":TT_PASSWORD,"remember-me":True},
+            headers={"Content-Type":"application/json"}, timeout=15)
+        if r.status_code in (200,201):
+            token=r.json()["data"]["session-token"]
+            save_session(token)
+            print("✅ Auto re-login successful")
+            return token
+    except Exception as e:
+        print(f"⚠️ Auto re-login failed: {e}")
+    return None
+
 def do_login():
     headers={"Content-Type":"application/json"}
     r=requests.post(f"{TT_BASE_URL}/sessions",json={"login":TT_USERNAME,"password":TT_PASSWORD,"remember-me":True},headers=headers)
@@ -239,9 +263,14 @@ def atr(bars,p=14):
     trs=[max(bars[i].high-bars[i].low,abs(bars[i].high-bars[i-1].close),abs(bars[i].low-bars[i-1].close)) for i in range(1,len(bars))]
     return sum(trs[-p:])/p
 
-def vwap(bars):
+def session_vwap(bars):
+    """VWAP anchored to today's 9:30 AM ET session open — resets each day."""
+    now_et_date = (datetime.now(timezone.utc) - timedelta(hours=4)).strftime("%Y-%m-%d")
+    session_open = now_et_date + " 09:30"
+    session_bars = [b for b in bars if str(b.date)[:16] >= session_open]
+    if not session_bars: return None
     cv=cv2=0
-    for b in bars: tp=(b.high+b.low+b.close)/3;cv+=tp*b.volume;cv2+=b.volume
+    for b in session_bars: tp=(b.high+b.low+b.close)/3; cv+=tp*b.volume; cv2+=b.volume
     return cv/cv2 if cv2 else None
 
 def avgvol(bars,p=20):
@@ -271,6 +300,10 @@ def save_log(log):
 def todays_trades(log):
     t=datetime.now(timezone.utc).strftime("%Y-%m-%d")
     return sum(1 for x in log["trades"] if x["timestamp"].startswith(t) and x.get("order_placed"))
+def todays_pnl(log):
+    """Sum of realized P&L on closed trades today."""
+    t=datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return sum(x.get("pnl_usd",0) for x in log["trades"] if x["timestamp"].startswith(t) and x.get("closed"))
 def open_trade(log):
     for t in reversed(log["trades"]):
         if t.get("order_placed") and not t.get("closed"): return t
@@ -286,7 +319,7 @@ def on_bar(bars,acct,sym):
 
     cl=[b.close for b in bars]; price=cl[-1]
     e20=ema(cl,EMA_PERIOD); r3=rsi(cl,RSI_PERIOD); at=atr(bars,ATR_PERIOD)
-    vw=vwap(bars); b15=bias15m(); av=avgvol(bars,20); lv=bars[-1].volume
+    vw=session_vwap(bars); b15=bias15m(); av=avgvol(bars,20); lv=bars[-1].volume
     dp=abs((price-e20)/e20)*100 if e20 else 0
     sp=max(MIN_STOP_POINTS,min(MAX_STOP_POINTS,(at*ATR_STOP_MULT) if at else 4.0)); tp=sp*2
 
@@ -323,6 +356,12 @@ def on_bar(bars,acct,sym):
 
     log=load_log()
     if todays_trades(log)>=MAX_TRADES_PER_DAY: print("🚫 Max trades"); return
+
+    # Daily drawdown circuit breaker
+    dpnl=todays_pnl(log)
+    if dpnl<=-MAX_DAILY_LOSS:
+        print(f"🛑 Daily loss limit hit (${dpnl:.2f}) — no new trades today"); return
+
     if e20 is None or r3 is None: return
     bull=price>e20
     checks=([(f"Above EMA",price>e20),(f"Within {EMA_PROXIMITY_PCT}%",dp<EMA_PROXIMITY_PCT),("RSI<40",r3<40),("Above VWAP",vw is None or price>vw),("15m bull",b15 is None or b15=="bull"),(f"Vol>={VOLUME_MULT}x",av==0 or lv>=av*VOLUME_MULT)]
@@ -343,22 +382,28 @@ def main():
     print("="*55)
     print(f"  Tastytrade MES Bot — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"  Thomas Wade 4-Channel + TJR ICT | ATR Stops")
+    print(f"  Daily loss limit: ${MAX_DAILY_LOSS}")
     print("="*55)
     start_web_server()
 
-    # Try saved session first (file → env var fallback for Railway restarts)
+    # Try saved session → env var → auto re-login → web UI
     saved=load_session() or TT_SESSION_TOKEN_ENV or None
     if saved:
         auth["session_token"]=saved; auth["step"]="done"; auth["ready"].set()
         print("✅ Using saved session token")
     else:
-        print(f"\n🔐 Visit: https://tastytrade-bot-production.up.railway.app")
-        while True:
-            try: do_login(); break
-            except Exception as e:
-                print(f"❌ Login failed: {e}")
-                print("⏳ Waiting 5 min before retry...")
-                time.sleep(300)
+        # Try silent login first before falling back to web UI
+        token=try_auto_login()
+        if token:
+            auth["session_token"]=token; auth["step"]="done"; auth["ready"].set()
+        else:
+            print(f"\n🔐 Visit: https://tastytrade-bot-production.up.railway.app")
+            while True:
+                try: do_login(); break
+                except Exception as e:
+                    print(f"❌ Login failed: {e}")
+                    print("⏳ Waiting 5 min before retry...")
+                    time.sleep(300)
 
     auth["ready"].wait()
 
@@ -377,7 +422,7 @@ def main():
             time.sleep(300)
 
     print(f"\n📡 Polling every 60s...\n")
-    last=None; refresh=time.time()
+    last=None
 
     while True:
         try:
@@ -390,11 +435,16 @@ def main():
             else: print("⚠️ No bar data")
         except Exception as e:
             print(f"❌ {e}")
-            if "401" in str(e) or "invalid_session" in str(e):
-                auth["step"]="idle"; auth["ready"].clear()
-                print("🔄 Session expired — re-authorizing via web UI...")
-                try: do_login()
-                except: time.sleep(300)
+            if "401" in str(e) or "invalid_session" in str(e).lower() or "unauthorized" in str(e).lower():
+                print("🔄 Session expired — trying auto re-login...")
+                token=try_auto_login()
+                if token:
+                    auth["session_token"]=token; auth["step"]="done"; auth["ready"].set()
+                else:
+                    auth["step"]="idle"; auth["ready"].clear()
+                    print("🔐 Auto re-login failed — visit web UI to re-authorize")
+                    try: do_login()
+                    except: time.sleep(300)
         time.sleep(60)
 
 if __name__=="__main__":
