@@ -46,6 +46,8 @@ VOLUME_MULT        = 1.2
 NEWS_BLOCK_MIN     = 15
 AVOID_OPEN_MINUTES = 15
 AVOID_CLOSE_MINUTES= 30
+DEAD_ZONE_START    = (12, 0)   # 12:00 PM ET — midday chop begins
+DEAD_ZONE_END      = (13, 30)  # 1:30 PM ET — volume returns
 MAX_TRADES_PER_DAY = 3
 MAX_CONTRACTS      = int(os.getenv("MAX_CONTRACTS", "3"))
 RISK_PCT           = float(os.getenv("RISK_PCT", "1.0"))
@@ -211,6 +213,23 @@ def two_bar_block(bars, bull):
     else:
         return abs(prev.low - curr.low) <= 0.50
 
+def confirmation_candle(bars, bull):
+    """
+    Thomas Wade entry rule: wait for price to break ABOVE signal bar high (longs)
+    or BELOW signal bar low (shorts) before entering.
+    bars[-2] = signal/setup bar, bars[-1] = confirmation bar (just closed).
+    """
+    if len(bars) < 2: return False, None
+    setup = bars[-2]
+    confirm = bars[-1]
+    if bull:
+        triggered = confirm.high > setup.high
+        entry_price = setup.high + TICK_SIZE
+    else:
+        triggered = confirm.low < setup.low
+        entry_price = setup.low - TICK_SIZE
+    return triggered, entry_price
+
 def second_entry_confirmed(bars, e20, bull):
     """Prev candle must have touched the EMA zone (within 0.3%) — real pullback."""
     if len(bars)<2 or e20 is None: return True
@@ -265,6 +284,13 @@ def news():
     for h,mn in NEWS_TIMES_ET:
         if abs(t-(h*60+mn))<=NEWS_BLOCK_MIN: return True,f"{h:02d}:{mn:02d}ET"
     return False,None
+
+def dead_zone():
+    """Skip 12:00–1:30 PM ET — low volume midday chop."""
+    et=now_et(); t=et.hour*60+et.minute
+    start=DEAD_ZONE_START[0]*60+DEAD_ZONE_START[1]
+    end=DEAD_ZONE_END[0]*60+DEAD_ZONE_END[1]
+    return start<=t<=end
 
 # ── Persistence ────────────────────────────────────────────────────────────────
 def load_log():
@@ -551,6 +577,7 @@ def on_bar(bars, acct, sym):
     if avoid(): print("⏳ Open/close buffer"); return
     nn,nl=news()
     if nn: print(f"📰 News:{nl}"); return
+    if dead_zone(): print(f"😴 Dead zone (12:00–1:30 PM ET)"); return
     if len(bars)<ATR_PERIOD+EMA_PERIOD: print(f"⏳ Not enough bars ({len(bars)})"); return
 
     cl=[b.close for b in bars]; price=cl[-1]; signal_bar=bars[-1]
@@ -649,12 +676,20 @@ def on_bar(bars, acct, sym):
 
     bull=price>e20
 
-    # Signal bar checks (Thomas Wade)
-    bar_ticks=(signal_bar.high-signal_bar.low)/TICK_SIZE
-    if signal_bar_too_large(signal_bar):
+    # Signal bar checks (Thomas Wade) — bars[-2] is the setup bar
+    setup_bar = bars[-2] if len(bars)>=2 else signal_bar
+    bar_ticks=(setup_bar.high-setup_bar.low)/TICK_SIZE
+    if signal_bar_too_large(setup_bar):
         print(f"🚫 Signal bar too large ({bar_ticks:.0f} ticks > {MAX_BAR_TICKS})"); return
-    if not signal_bar_quality(signal_bar, bull):
+    if not signal_bar_quality(setup_bar, bull):
         print(f"🚫 Poor signal bar quality — didn't close in right third"); return
+
+    # Confirmation candle: current bar must break above setup bar high (longs)
+    # or below setup bar low (shorts) — Thomas Wade's actual entry trigger
+    confirmed, entry_price = confirmation_candle(bars, bull)
+    if not confirmed:
+        print(f"🚫 No confirmation — bar hasn't broken {'above' if bull else 'below'} setup bar {'high' if bull else 'low'} ({setup_bar.high if bull else setup_bar.low:.2f})"); return
+    print(f"  ✅ Confirmed entry @ {entry_price:.2f} (broke setup bar {'high' if bull else 'low'})")
 
     # Two-bar matching highs/lows (don't enter into obvious resistance/support)
     if two_bar_block(bars, bull):
@@ -669,17 +704,18 @@ def on_bar(bars, acct, sym):
         print(f"🚫 No second entry — prev candle didn't touch EMA zone"); return
 
     # Previous day levels — don't enter into PDH (longs) or PDL (shorts)
-    if pdh and bull and price >= pdh - PDH_PDL_BUFFER:
+    if pdh and bull and entry_price >= pdh - PDH_PDL_BUFFER:
         print(f"🚫 Long blocked — within {PDH_PDL_BUFFER}pts of PDH ({pdh:.2f})"); return
-    if pdl and not bull and price <= pdl + PDH_PDL_BUFFER:
+    if pdl and not bull and entry_price <= pdl + PDH_PDL_BUFFER:
         print(f"🚫 Short blocked — within {PDH_PDL_BUFFER}pts of PDL ({pdl:.2f})"); return
 
     # Core entry conditions
-    checks=([(f"Above EMA",price>e20),(f"Within {EMA_PROXIMITY_PCT}%",dp<EMA_PROXIMITY_PCT),
+    ep_dist=abs((entry_price-e20)/e20)*100 if e20 else 0
+    checks=([(f"Above EMA",entry_price>e20),(f"Within {EMA_PROXIMITY_PCT}%",ep_dist<EMA_PROXIMITY_PCT),
               ("RSI<40",r3<40),("15m bull",b15 is None or b15=="bull"),
               (f"Vol>={VOLUME_MULT}x",av==0 or lv>=av*VOLUME_MULT)]
             if bull else
-            [(f"Below EMA",price<e20),(f"Within {EMA_PROXIMITY_PCT}%",dp<EMA_PROXIMITY_PCT),
+            [(f"Below EMA",entry_price<e20),(f"Within {EMA_PROXIMITY_PCT}%",ep_dist<EMA_PROXIMITY_PCT),
               ("RSI>60",r3>60),("15m bear",b15 is None or b15=="bear"),
               (f"Vol>={VOLUME_MULT}x",av==0 or lv>=av*VOLUME_MULT)])
     print(f"\n  {'LONG' if bull else 'SHORT'} checks:")
@@ -687,25 +723,25 @@ def on_bar(bars, acct, sym):
     for lb,ps in checks: print(f"  {'✅' if ps else '🚫'} {lb}"); ok=ok and ps
     if not ok: print("🚫 BLOCKED"); return
 
-    # Calculate stops and targets (Thomas Wade rules)
-    sp = calc_entry_stop(signal_bar, price, bull)
-    tp = calc_runner_target(bars, price, bull, at)
+    # Calculate stops and targets (Thomas Wade rules) — stop is 1 tick beyond setup bar
+    sp = calc_entry_stop(setup_bar, entry_price, bull)
+    tp = calc_runner_target(bars, entry_price, bull, at)
     qty = calc_contracts(acct, sp)
 
-    print(f"✅ ENTRY {'LONG' if bull else 'SHORT'} {qty}ct @ ~{price:.2f}")
-    print(f"   Stop: {sp:.2f}pts (1 tick beyond bar {'low' if bull else 'high'}: {signal_bar.low if bull else signal_bar.high:.2f})")
+    print(f"✅ ENTRY {'LONG' if bull else 'SHORT'} {qty}ct @ ~{entry_price:.2f}")
+    print(f"   Stop: {sp:.2f}pts (1 tick beyond setup bar {'low' if bull else 'high'}: {setup_bar.low if bull else setup_bar.high:.2f})")
     print(f"   Scalp: {SCALP_TICKS} ticks ({SCALP_TICKS*TICK_SIZE:.2f}pts) | Runner: {tp:.2f}pts")
     side="Buy" if bull else "Sell"
     try:
         oid=place_order(acct,sym,side,qty,0)
         log["trades"].append({"timestamp":datetime.now(timezone.utc).isoformat(),"action":side,
-            "symbol":sym,"qty":qty,"price":price,"ema20":round(e20,2),"rsi3":round(r3,2),
+            "symbol":sym,"qty":qty,"price":entry_price,"ema20":round(e20,2),"rsi3":round(r3,2),
             "atr":round(at,2) if at else None,"bias_15m":b15,
             "ema_slope":round(sl,4) if sl else None,"stop_pts":round(sp,2),"target_pts":round(tp,2),
-            "breakeven_triggered":False,"partial_done":False,"trail_high":price,
+            "breakeven_triggered":False,"partial_done":False,"trail_high":entry_price,
             "closed":False,"order_id":oid,"order_placed":True})
         save_log(log)
-        sms(f"{'📈' if side=='Buy' else '📉'} MES {'LONG' if bull else 'SHORT'} {qty}ct @ {price:.2f} | Stop:{sp:.1f}pts Scalp:{SCALP_TICKS}ticks Runner:{tp:.1f}pts")
+        sms(f"{'📈' if side=='Buy' else '📉'} MES {'LONG' if bull else 'SHORT'} {qty}ct @ {entry_price:.2f} | Stop:{sp:.1f}pts Scalp:{SCALP_TICKS}ticks Runner:{tp:.1f}pts")
     except Exception as e: print(f"❌ Order:{e}")
 
 # ── Main ───────────────────────────────────────────────────────────────────────
