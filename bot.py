@@ -689,7 +689,14 @@ def on_bar(bars, acct, sym):
     confirmed, entry_price = confirmation_candle(bars, bull)
     if not confirmed:
         print(f"🚫 No confirmation — bar hasn't broken {'above' if bull else 'below'} setup bar {'high' if bull else 'low'} ({setup_bar.high if bull else setup_bar.low:.2f})"); return
-    print(f"  ✅ Confirmed entry @ {entry_price:.2f} (broke setup bar {'high' if bull else 'low'})")
+    # Don't chase — if price has run more than 4 ticks past entry, the move is gone
+    MAX_CHASE_TICKS = 4
+    chase_pts = MAX_CHASE_TICKS * TICK_SIZE
+    if bull and price > entry_price + chase_pts:
+        print(f"🚫 Chasing — price {price:.2f} is {(price-entry_price)/TICK_SIZE:.0f} ticks past entry ({entry_price:.2f})"); return
+    if not bull and price < entry_price - chase_pts:
+        print(f"🚫 Chasing — price {price:.2f} is {(entry_price-price)/TICK_SIZE:.0f} ticks past entry ({entry_price:.2f})"); return
+    print(f"  ✅ Confirmed entry @ {entry_price:.2f} (broke setup bar {'high' if bull else 'low'}, price {price:.2f})")
 
     # Two-bar matching highs/lows (don't enter into obvious resistance/support)
     if two_bar_block(bars, bull):
