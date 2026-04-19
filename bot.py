@@ -288,6 +288,14 @@ def load_session():
         with open(SESSION_FILE) as f: return json.load(f).get("session_token")
     return None
 
+def validate_session(token):
+    """Returns True if the token is still valid, False if expired."""
+    try:
+        r=requests.get(f"{TT_BASE_URL}/customers/me",
+            headers={"Content-Type":"application/json","Authorization":token}, timeout=10)
+        return r.status_code==200
+    except: return False
+
 def try_auto_login():
     if not TT_USERNAME or not TT_PASSWORD: return None
     try:
@@ -543,6 +551,23 @@ def on_bar(bars, acct, sym):
             trail_stop_pts=(trail_high-ep)*d-TRAIL_POINTS
             if trail_stop_pts>0: osp=trail_stop_pts
 
+        partial_done=ot.get("partial_done",False) if ot else False
+
+        # Partial take profit — close half at 1:1 R:R when qty > 1
+        if not partial_done and qty>1 and pts>=osp:
+            half=qty//2
+            print(f"  🎯 Partial TP — closing {half}/{qty} at 1:1 (+{pts:.2f}pts)")
+            try:
+                place_order(acct,sym,"Sell" if cur>0 else "Buy",half,cur)
+                partial_pnl=pts*half*5
+                if ot:
+                    ot["partial_done"]=True; ot["qty"]=qty-half
+                    ot["breakeven_triggered"]=True; ot["trail_high"]=price
+                    save_log(log)
+                partial_done=True; be=True; qty=qty-half
+                sms(f"🎯 MES PARTIAL +{pts:.1f}pts | Closed {half}ct @ {price:.2f} (${partial_pnl:+.2f}) | {qty}ct still open")
+            except Exception as e: print(f"❌ Partial:{e}")
+
         if not be and pts>=otp/2:
             if ot: ot["breakeven_triggered"]=True; ot["trail_high"]=price; save_log(log)
             be=True; print("  🔒 Breakeven + trail active")
@@ -637,8 +662,22 @@ def main():
 
     saved=load_session() or TT_SESSION_TOKEN_ENV or None
     if saved:
-        auth["session_token"]=saved; auth["step"]="done"; auth["ready"].set()
-        print("✅ Using saved session token")
+        print("🔍 Validating saved session token...")
+        if validate_session(saved):
+            auth["session_token"]=saved; auth["step"]="done"; auth["ready"].set()
+            print("✅ Session token valid")
+        else:
+            print("⚠️ Saved session expired — attempting auto re-login...")
+            token=try_auto_login()
+            if token:
+                auth["session_token"]=token; auth["step"]="done"; auth["ready"].set()
+            else:
+                print(f"\n🔐 Visit: https://tastytrade-bot-production.up.railway.app")
+                while True:
+                    try: do_login(); break
+                    except Exception as e:
+                        print(f"❌ Login: {e} — retrying in 5 min")
+                        time.sleep(300)
     else:
         token=try_auto_login()
         if token:
@@ -673,6 +712,14 @@ def main():
             bars=fetch_bars(sym)
             if bars and len(bars)>=2:
                 done=bars[:-1]; bt=done[-1].date
+                # Stale data guard — don't trade off bars older than 2 candles (10 min)
+                try:
+                    bar_dt=datetime.fromisoformat(str(bt).replace(" ","T"))
+                    if bar_dt.tzinfo is None: bar_dt=bar_dt.replace(tzinfo=timezone.utc)
+                    age_min=(datetime.now(timezone.utc)-bar_dt).total_seconds()/60
+                    if mkt() and age_min>10:
+                        print(f"⚠️ Stale data: last bar {age_min:.0f}min old — skipping"); time.sleep(60); continue
+                except Exception: pass
                 if bt!=last: last=bt; on_bar(done,acct,sym)
                 elif mkt(): print(f"⏳ {datetime.now().strftime('%H:%M:%S')} waiting...")
                 else: print(f"🕐 {datetime.now().strftime('%H:%M:%S')} market closed")
