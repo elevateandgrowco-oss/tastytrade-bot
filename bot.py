@@ -581,8 +581,11 @@ def on_bar(bars, acct, sym):
     if len(bars)<ATR_PERIOD+EMA_PERIOD: print(f"⏳ Not enough bars ({len(bars)})"); return
 
     cl=[b.close for b in bars]; price=cl[-1]; signal_bar=bars[-1]
-    e20=ema(cl,EMA_PERIOD); r3=rsi(cl,RSI_PERIOD); at=atr(bars,ATR_PERIOD)
+    e20=ema(cl,EMA_PERIOD); at=atr(bars,ATR_PERIOD)
     sl=ema_slope(cl,EMA_PERIOD); b15=bias15m()
+    # RSI evaluated at setup bar (bars[-2]) — confirmation bar is bullish/bearish
+    # and would push RSI away from the oversold/overbought reading we want to see
+    r3=rsi(cl[:-1],RSI_PERIOD) if len(cl)>1 else rsi(cl,RSI_PERIOD)
     av=avgvol(bars,20); lv=bars[-1].volume
     dp=abs((price-e20)/e20)*100 if e20 else 0
     pdh,pdl,pdc=get_prev_day_levels()
