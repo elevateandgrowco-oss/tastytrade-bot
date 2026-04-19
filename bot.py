@@ -108,7 +108,8 @@ def fetch_bars_twelvedata(interval="5min", outputsize=100):
     try:
         r=requests.get("https://api.twelvedata.com/time_series",
             params={"symbol":"MES","exchange":"CME","interval":interval,
-                    "outputsize":outputsize,"apikey":TWELVE_DATA_KEY,"order":"ASC"}, timeout=15)
+                    "outputsize":outputsize,"apikey":TWELVE_DATA_KEY,"order":"ASC",
+                    "timezone":"UTC"}, timeout=15)
         if r.status_code!=200: print(f"⚠️ TwelveData:{r.status_code}"); return []
         data=r.json()
         if data.get("status")=="error": print(f"⚠️ TwelveData:{data.get('message')}"); return []
@@ -248,10 +249,14 @@ def get_prev_day_levels():
     except: return None, None, None
 
 def get_session_extreme(bars, bull):
-    """Session high (longs) or session low (shorts) since 9:30 AM ET."""
-    et_date = now_et().strftime("%Y-%m-%d")
-    session_open = et_date + " 09:30"
-    sb = [b for b in bars if str(b.date)[:16] >= session_open]
+    """Session high (longs) or session low (shorts) since 9:30 AM ET.
+    Bars are in UTC (timezone=UTC in Twelve Data request).
+    9:30 AM ET = 13:30 UTC (EDT/summer) or 14:30 UTC (EST/winter).
+    """
+    utc_open_hour = 13 if et_offset() == -4 else 14
+    utc_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    session_open_utc = f"{utc_date} {utc_open_hour:02d}:30"
+    sb = [b for b in bars if str(b.date)[:16] >= session_open_utc]
     if not sb: return None
     return max(b.high for b in sb) if bull else min(b.low for b in sb)
 
@@ -272,12 +277,14 @@ def calc_runner_target(bars, price, bull, at):
 
 # ── Market timing ──────────────────────────────────────────────────────────────
 def mkt():
-    m=datetime.now(timezone.utc); t=m.hour*60+m.minute
-    return (13*60+35)<=t<=(19*60+55)
+    """DST-aware: uses ET directly instead of hardcoded UTC offsets."""
+    et=now_et(); t=et.hour*60+et.minute
+    return (9*60+35)<=t<=(15*60+55)
 
 def avoid():
-    m=datetime.now(timezone.utc); t=m.hour*60+m.minute
-    return t<(13*60+30)+AVOID_OPEN_MINUTES or t>(20*60)-AVOID_CLOSE_MINUTES
+    """DST-aware market open/close buffers in ET."""
+    et=now_et(); t=et.hour*60+et.minute
+    return t<(9*60+30)+AVOID_OPEN_MINUTES or t>(16*60)-AVOID_CLOSE_MINUTES
 
 def news():
     et=now_et(); t=et.hour*60+et.minute
@@ -637,14 +644,23 @@ def on_bar(bars, acct, sym):
             if ot: ot["breakeven_triggered"]=True; ot["trail_high"]=price; save_log(log)
             be=True; print("  🔒 Breakeven + trail active")
 
-        eff=0.0 if be else osp; ex=None
+        # Determine minimum acceptable pts before exit
+        # Before BE: hard stop at -osp from entry
+        # After BE: trailing stop — protect (trail_high - entry) minus TRAIL_POINTS slack
+        if be and TRAIL_POINTS > 0:
+            tspts = (trail_high - ep) * d - TRAIL_POINTS  # pts protected above entry
+            min_pts = max(0.0, tspts)  # floor at breakeven — never give back more than we need to
+        else:
+            min_pts = -osp
+
+        ex=None
         if cur>0:
             if e20 and price<e20: ex="Below EMA"
-            elif pts<=-eff: ex=f"Stop({pts:.2f})"
+            elif pts<min_pts: ex=f"{'TrailStop' if be else 'Stop'}({pts:.2f})"
             elif pts>=otp: ex=f"Target(+{pts:.2f})"
         else:
             if e20 and price>e20: ex="Above EMA"
-            elif pts<=-eff: ex=f"Stop({pts:.2f})"
+            elif pts<min_pts: ex=f"{'TrailStop' if be else 'Stop'}({pts:.2f})"
             elif pts>=otp: ex=f"Target(+{pts:.2f})"
 
         if ex:
@@ -658,7 +674,8 @@ def on_bar(bars, acct, sym):
                 sms(f"{emoji} MES CLOSED {ex} | {'L' if cur>0 else 'S'}{qty} @ {ep:.2f}→{price:.2f} | ${pnl:+.2f}")
             except Exception as e: print(f"❌ Close:{e}")
         else:
-            print(f"  ✅ Hold — stop:{'BE' if be else f'-{osp:.2f}'} target:+{otp:.2f} trail:{trail_high:.2f}")
+            stop_label = f"trail@{min_pts:.2f}pts" if be else f"-{osp:.2f}pts"
+            print(f"  ✅ Hold — stop:{stop_label} target:+{otp:.2f} trail_high:{trail_high:.2f}")
         return
 
     # ── New entry checks ───────────────────────────────────────────────────────
