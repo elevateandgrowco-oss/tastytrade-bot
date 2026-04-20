@@ -1004,20 +1004,17 @@ def strategy_loop(order_sym, acct):
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 def do_auth():
-    saved = load_session() or TT_SESSION_TOKEN_ENV or None
-    if saved:
-        print("🔍 Validating saved session...")
-        if validate_session(saved):
-            auth["session_token"]=saved; auth["step"]="done"; auth["ready"].set()
+    # Try env var token first (most up-to-date), then saved file
+    for candidate in [TT_SESSION_TOKEN_ENV, load_session()]:
+        if not candidate: continue
+        print("🔍 Validating session...")
+        if validate_session(candidate):
+            auth["session_token"]=candidate; auth["step"]="done"; auth["ready"].set()
             print("✅ Session valid"); return
-        print("⚠️ Expired — auto re-login...")
-        token=try_auto_login()
-        if token:
-            auth["session_token"]=token; auth["step"]="done"; auth["ready"].set(); return
-    else:
-        token=try_auto_login()
-        if token:
-            auth["session_token"]=token; auth["step"]="done"; auth["ready"].set(); return
+    print("⚠️ No valid session — auto re-login...")
+    token=try_auto_login()
+    if token:
+        auth["session_token"]=token; auth["step"]="done"; auth["ready"].set(); return
     print(f"\n🔐 Visit: https://tastytrade-bot-production.up.railway.app")
     while True:
         try: do_login(); return
