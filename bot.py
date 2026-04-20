@@ -122,9 +122,13 @@ def _fetch_td(interval="5min", outputsize=100):
             params={"symbol":"MES","exchange":"CME","interval":interval,
                     "outputsize":outputsize,"apikey":TWELVE_DATA_KEY,
                     "order":"ASC","timezone":"UTC"}, timeout=15)
-        if r.status_code!=200: return []
+        if r.status_code!=200:
+            print(f"⚠️ TwelveData({interval}) HTTP {r.status_code}: {r.text[:200]}")
+            return []
         d=r.json()
-        if d.get("status")=="error": return []
+        if d.get("status")=="error":
+            print(f"⚠️ TwelveData({interval}) error: {d.get('message','')}")
+            return []
         return [Bar(i["datetime"],float(i["open"]),float(i["high"]),float(i["low"]),
                     float(i["close"]),int(i.get("volume",0))) for i in d.get("values",[])]
     except Exception as e: print(f"⚠️ TwelveData({interval}):{e}"); return []
@@ -512,8 +516,13 @@ async def dxlink_stream(streamer_sym):
             }
         }))
 
-        # Subscribe to 5m, 15m, 1day candles
-        subs = [{"type":"Candle","symbol":_candle_sym(streamer_sym,p)} for p in ("5m","15m","1day")]
+        # Subscribe to 5m, 15m, 1day candles with fromTime so DXLink backfills history
+        now_ms = int(time.time() * 1000)
+        subs = [
+            {"type":"Candle","symbol":_candle_sym(streamer_sym,"5m"),   "fromTime": now_ms - 150*5*60*1000},
+            {"type":"Candle","symbol":_candle_sym(streamer_sym,"15m"),  "fromTime": now_ms - 150*15*60*1000},
+            {"type":"Candle","symbol":_candle_sym(streamer_sym,"1day"), "fromTime": now_ms - 90*24*60*60*1000},
+        ]
         await ws.send(json.dumps({"type":"FEED_SUBSCRIPTION","channel":1,"add":subs}))
         print(f"✅ Subscribed: {[s['symbol'] for s in subs]}")
         _state["stream"] = "live"
@@ -992,6 +1001,14 @@ def strategy_loop(order_sym, acct):
                 continue
             else:
                 continue
+        # Skip strategy on historical warmup bars (older than 2 bar periods)
+        try:
+            bar_ts = datetime.fromisoformat(bar.date.replace("Z","+00:00"))
+            if bar_ts.tzinfo is None: bar_ts = bar_ts.replace(tzinfo=timezone.utc)
+        except Exception:
+            bar_ts = datetime.now(timezone.utc)
+        if bar_ts < datetime.now(timezone.utc) - timedelta(minutes=11):
+            continue  # historical bar — accumulated for warmup, strategy skipped
         try:
             on_bar(snapshot, acct, order_sym)
         except Exception as e:
