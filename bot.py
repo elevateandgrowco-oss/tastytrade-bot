@@ -457,7 +457,7 @@ async def dxlink_stream(streamer_sym):
 
     async with websockets.connect(
         ws_url,
-        extra_headers={"Authorization": f"Bearer {token}"},
+        additional_headers={"Authorization": f"Bearer {token}"},
         ping_interval=20, ping_timeout=30, close_timeout=5
     ) as ws:
         _state["stream"] = "connected"
