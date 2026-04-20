@@ -89,6 +89,10 @@ _bars_lock = threading.Lock()
 # Queue: DXLink thread → strategy thread
 _bar_queue = _queue_mod.Queue()
 
+# Watchdog — tracks last bar time so we can alert if stream goes silent
+_last_bar_ts  = None   # datetime of last received 5m bar
+_last_bar_lock = threading.Lock()
+
 # Pending limit order (one at a time — we only enter one position)
 _pending = {"order_id": None}
 _pending_lock = threading.Lock()
@@ -576,13 +580,19 @@ async def dxlink_stream(streamer_sym):
 
 async def stream_with_reconnect(streamer_sym):
     """Runs dxlink_stream forever with automatic reconnection."""
+    first = True
     while True:
         try:
             await dxlink_stream(streamer_sym)
         except Exception as e:
             _state["stream"] = "reconnecting"
             print(f"❌ DXLink disconnect: {e} — reconnecting in 5s")
-            sms(f"⚠️ MES stream lost: {e}. Reconnecting...")
+            if not first:
+                sms(f"🚨 MES stream LOST: {e}. Reconnecting now...")
+        else:
+            if not first:
+                sms("✅ MES stream reconnected")
+        first = False
         await asyncio.sleep(5)
 
 # ── Auth ───────────────────────────────────────────────────────────────────────
@@ -977,6 +987,30 @@ def on_bar(bars, acct, sym):
         sms(f"{'📈' if side=='Buy' else '📉'} MES {'LONG' if bull else 'SHORT'} LIMIT {qty}ct @ {entry_price:.2f} | Stop:{sp:.1f}pts Scalp:{SCALP_TICKS}t Runner:{tp:.1f}pts")
     except Exception as e: print(f"❌ Limit order:{e}")
 
+# ── Watchdog — alerts if stream goes silent during market hours ────────────────
+def watchdog_loop():
+    """Texts owner if no 5m bar received for 20+ minutes during market hours."""
+    SILENCE_LIMIT = 20 * 60   # 20 minutes without a bar = something is wrong
+    alerted = False
+    sms("✅ MES bot started — watchdog active")
+    while True:
+        time.sleep(60)
+        if not mkt():
+            alerted = False  # reset alert state outside market hours
+            continue
+        with _last_bar_lock:
+            last = _last_bar_ts
+        if last is None:
+            gap = SILENCE_LIMIT + 1
+        else:
+            gap = (datetime.now(timezone.utc) - last).total_seconds()
+        if gap > SILENCE_LIMIT and not alerted:
+            sms(f"🚨 MES bot SILENT — no bars for {int(gap//60)}min. Stream may be broken. Check Railway logs.")
+            alerted = True
+        elif gap <= SILENCE_LIMIT and alerted:
+            sms("✅ MES bot stream restored — bars flowing again")
+            alerted = False
+
 # ── Strategy processor thread ──────────────────────────────────────────────────
 def strategy_loop(order_sym, acct):
     """Reads completed bars from queue and runs on_bar() for 5m bars."""
@@ -991,6 +1025,9 @@ def strategy_loop(order_sym, acct):
                 _bars_5m.append(bar)
                 if len(_bars_5m)>200: _bars_5m.pop(0)
                 snapshot = list(_bars_5m)
+                with _last_bar_lock:
+                    global _last_bar_ts
+                    _last_bar_ts = datetime.now(timezone.utc)
             elif period == "15m":
                 _bars_15m.append(bar)
                 if len(_bars_15m)>200: _bars_15m.pop(0)
@@ -1067,6 +1104,9 @@ def main():
     # Start strategy processor thread
     t=threading.Thread(target=strategy_loop, args=(order_sym,acct), daemon=True)
     t.start()
+
+    # Start watchdog — texts on silence or disconnect
+    threading.Thread(target=watchdog_loop, daemon=True).start()
 
     # Run DXLink websocket in asyncio (main thread)
     print(f"\n📡 Starting DXLink stream for {streamer_sym}...\n")
