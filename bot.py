@@ -121,33 +121,46 @@ def sms(msg):
 # ── Historical bar bootstrap (indicator warmup) ────────────────────────────────
 def _fetch_td(interval="5min", outputsize=100):
     if not TWELVE_DATA_KEY: return []
-    try:
-        r=requests.get("https://api.twelvedata.com/time_series",
-            params={"symbol":"MES","exchange":"CME","interval":interval,
-                    "outputsize":outputsize,"apikey":TWELVE_DATA_KEY,
-                    "order":"ASC","timezone":"UTC"}, timeout=15)
-        if r.status_code!=200:
-            print(f"⚠️ TwelveData({interval}) HTTP {r.status_code}: {r.text[:200]}")
-            return []
-        d=r.json()
-        if d.get("status")=="error":
-            print(f"⚠️ TwelveData({interval}) error: {d.get('message','')}")
-            return []
-        return [Bar(i["datetime"],float(i["open"]),float(i["high"]),float(i["low"]),
-                    float(i["close"]),int(i.get("volume",0))) for i in d.get("values",[])]
-    except Exception as e: print(f"⚠️ TwelveData({interval}):{e}"); return []
+    # Try multiple symbol formats — Twelve Data is picky about futures symbols
+    for symbol, exchange in [("MES1!", None), ("MES", "CME"), ("/MES", None)]:
+        try:
+            params = {"symbol": symbol, "interval": interval, "outputsize": outputsize,
+                      "apikey": TWELVE_DATA_KEY, "order": "ASC", "timezone": "UTC"}
+            if exchange:
+                params["exchange"] = exchange
+            r = requests.get("https://api.twelvedata.com/time_series", params=params, timeout=15)
+            if r.status_code != 200: continue
+            d = r.json()
+            if d.get("status") == "error": continue
+            bars = [Bar(i["datetime"],float(i["open"]),float(i["high"]),float(i["low"]),
+                        float(i["close"]),int(i.get("volume",0))) for i in d.get("values",[])]
+            if bars:
+                print(f"  TwelveData({interval}) OK with symbol={symbol}")
+                return bars
+        except Exception as e:
+            print(f"⚠️ TwelveData({interval}) symbol={symbol}: {e}")
+    return []
 
-def _fetch_yf(ticker, period, interval):
-    try:
-        df=yf.download(ticker,period=period,interval=interval,progress=False,auto_adjust=True)
-        if df.empty: return []
-        bars=[]
-        for ts,row in df.iterrows():
-            def _v(col):
-                v=row[col]; return float(v.iloc[0] if hasattr(v,"iloc") else v)
-            bars.append(Bar(str(ts),_v("Open"),_v("High"),_v("Low"),_v("Close"),int(_v("Volume"))))
-        return bars
-    except: return []
+def _fetch_yf(ticker, period, interval, retries=3):
+    for attempt in range(retries):
+        try:
+            df = yf.download(ticker, period=period, interval=interval,
+                             progress=False, auto_adjust=True)
+            if df.empty:
+                if attempt < retries - 1:
+                    time.sleep(5 + attempt * 5)
+                continue
+            bars = []
+            for ts, row in df.iterrows():
+                def _v(col):
+                    v = row[col]; return float(v.iloc[0] if hasattr(v, "iloc") else v)
+                bars.append(Bar(str(ts),_v("Open"),_v("High"),_v("Low"),_v("Close"),int(_v("Volume"))))
+            if bars: return bars
+        except Exception as e:
+            print(f"⚠️ yfinance {ticker} attempt {attempt+1}/{retries}: {e}")
+            if attempt < retries - 1:
+                time.sleep(10 + attempt * 10)
+    return []
 
 def bootstrap_bars():
     global _bars_5m, _bars_15m, _bars_1day
