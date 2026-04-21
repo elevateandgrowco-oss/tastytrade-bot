@@ -66,6 +66,15 @@ _state = {"price":None,"ema20":None,"rsi3":None,"atr":None,
           "bias15m":None,"slope":None,"last_bar":None,"equity":None,
           "pdh":None,"pdl":None,"pdc":None,"stream":"connecting"}
 
+# ── Diagnostics ────────────────────────────────────────────────────────────────
+_diag = {
+    "bars_received": {"5m": 0, "15m": 0, "1day": 0},   # total DXLink bar events
+    "bars_live":     {"5m": 0, "15m": 0, "1day": 0},   # passed 11-min age filter
+    "on_bar_calls":  0,                                  # times on_bar ran
+    "rejections":    {},                                 # reason → count
+    "last_bar_time": None,                               # last 5m bar timestamp string
+}
+
 auth = {
     "step": "idle",
     "session_token": None,
@@ -463,6 +472,7 @@ async def dxlink_stream(streamer_sym):
             bar_dt = datetime.fromtimestamp(s["time_ms"]/1000, tz=timezone.utc)
             completed = Bar(bar_dt.isoformat(), prev["o"],prev["h"],prev["l"],prev["c"],int(prev["v"] or 0))
             _bar_queue.put((period, completed))
+            _diag["bars_received"][period] += 1
             print(f"  📊 [{period}] {bar_dt.strftime('%H:%M UTC')} "
                   f"O:{prev['o']:.2f} H:{prev['h']:.2f} L:{prev['l']:.2f} C:{prev['c']:.2f}")
             s["time_ms"] = t_ms
@@ -760,6 +770,19 @@ class Handler(BaseHTTPRequestHandler):
             tok=auth.get("session_token") or ""
             self.send_response(200); self.send_header("Content-Type","text/plain"); self.end_headers()
             self.wfile.write(tok.encode()); return
+        if self.path=="/debug":
+            d=_diag; rj=sorted(d["rejections"].items(),key=lambda x:-x[1])
+            lines=[
+                f"=== BAR COUNTS ===",
+                f"DXLink bars received: 5m={d['bars_received']['5m']} 15m={d['bars_received']['15m']} 1d={d['bars_received']['1day']}",
+                f"Live bars (>11min filter): 5m={d['bars_live']['5m']}",
+                f"on_bar() calls: {d['on_bar_calls']}",
+                f"Last live bar: {d['last_bar_time'] or 'NONE'}",
+                f"",
+                f"=== REJECTION COUNTS ===",
+            ] + ([f"{r}: {c}" for r,c in rj] if rj else ["(none yet)"])
+            self.send_response(200); self.send_header("Content-Type","text/plain"); self.end_headers()
+            self.wfile.write("\n".join(lines).encode()); return
         step=auth["step"]
         if step=="done":
             html=dashboard_html(load_log())
@@ -829,11 +852,17 @@ def on_bar(bars, acct, sym):
     else:
         print(f"⏳ Warming up ({len(bars)} bars)"); return
 
-    if not mkt(): print("🕐 Outside market hours"); return
-    if avoid(): print("⏳ Open/close buffer"); return
+    _diag["on_bar_calls"] += 1
+
+    def reject(reason):
+        _diag["rejections"][reason] = _diag["rejections"].get(reason, 0) + 1
+        print(f"🚫 {reason}")
+
+    if not mkt(): reject("outside_market_hours"); return
+    if avoid(): reject("open_close_buffer"); return
     nn,nl=news()
-    if nn: print(f"📰 News:{nl}"); return
-    if dead_zone(): print(f"😴 Dead zone (12:00–1:30 PM ET)"); return
+    if nn: reject(f"news_{nl}"); return
+    if dead_zone(): reject("dead_zone"); return
 
     cur=get_mes_position(acct)
     if cur!=0:
@@ -922,65 +951,60 @@ def on_bar(bars, acct, sym):
         print(f"🛑 Daily loss limit (${dpnl:.2f})")
         sms(f"🛑 MES daily loss limit (${dpnl:.2f}). Done for today."); return
 
-    if e20 is None or r3 is None: return
-    if at and at<MIN_ATR: print(f"🚫 Chop ATR:{at:.2f}<{MIN_ATR}"); return
+    if e20 is None or r3 is None: reject("no_indicators"); return
+    if at and at<MIN_ATR: reject(f"chop_atr_{at:.2f}"); return
 
     bull = price > e20
 
     # Setup bar checks (bars[-2])
     setup_bar = bars[-2] if len(bars)>=2 else bars[-1]
     if signal_bar_too_large(setup_bar):
-        print(f"🚫 Setup bar too large ({(setup_bar.high-setup_bar.low)/TICK_SIZE:.0f} ticks)"); return
+        reject(f"setup_bar_too_large_{(setup_bar.high-setup_bar.low)/TICK_SIZE:.0f}t"); return
     if not signal_bar_quality(setup_bar, bull):
-        print(f"🚫 Poor setup bar quality"); return
+        reject("poor_setup_bar_quality"); return
 
-    # Confirmation candle: bars[-1] broke above/below setup bar
     confirmed, entry_price = confirmation_candle(bars, bull)
     if not confirmed:
-        print(f"🚫 No confirmation — {'high' if bull else 'low'} {setup_bar.high if bull else setup_bar.low:.2f} not broken"); return
+        reject(f"no_confirmation_{'bull' if bull else 'bear'}"); return
 
-    # No chasing — skip if we're already >4 ticks past entry
     chase_pts = 4 * TICK_SIZE
     if bull  and price > entry_price + chase_pts:
-        print(f"🚫 Chase: price {price:.2f} is {(price-entry_price)/TICK_SIZE:.0f} ticks past entry"); return
+        reject(f"chase_bull_{(price-entry_price)/TICK_SIZE:.0f}t"); return
     if not bull and price < entry_price - chase_pts:
-        print(f"🚫 Chase: price {price:.2f} is {(entry_price-price)/TICK_SIZE:.0f} ticks past entry"); return
+        reject(f"chase_bear_{(entry_price-price)/TICK_SIZE:.0f}t"); return
 
-    # Two-bar matching highs/lows
     if two_bar_block(bars, bull):
-        print(f"🚫 Two-bar {'highs' if bull else 'lows'} block"); return
+        reject(f"two_bar_block_{'bull' if bull else 'bear'}"); return
 
-    # EMA slope
     if sl is not None and not ((sl>0 and bull) or (sl<0 and not bull)):
-        print(f"🚫 EMA slope against trade ({sl:.3f})"); return
+        reject(f"ema_slope_against_{sl:.4f}"); return
 
-    # Second entry (setup bar touched EMA)
     if not second_entry_confirmed(bars, e20, bull):
-        print(f"🚫 Setup bar didn't touch EMA zone"); return
+        reject("no_ema_touch"); return
 
-    # PDH/PDL avoidance
     if pdh and bull  and entry_price >= pdh - PDH_PDL_BUFFER:
-        print(f"🚫 Long blocked — near PDH {pdh:.2f}"); return
+        reject(f"near_pdh_{pdh:.2f}"); return
     if pdl and not bull and entry_price <= pdl + PDH_PDL_BUFFER:
-        print(f"🚫 Short blocked — near PDL {pdl:.2f}"); return
+        reject(f"near_pdl_{pdl:.2f}"); return
 
-    # Core conditions
     ep_dist = abs((entry_price-e20)/e20)*100 if e20 else 0
-    checks = ([(f"Above EMA", entry_price>e20),
-               (f"Within {EMA_PROXIMITY_PCT}%", ep_dist<EMA_PROXIMITY_PCT),
-               ("RSI<40", r3<40),
-               ("15m bull", b15 is None or b15=="bull"),
-               (f"Vol>={VOLUME_MULT}x", av==0 or lv>=av*VOLUME_MULT)]
+    checks = ([(f"above_ema",        entry_price>e20),
+               (f"ema_proximity",    ep_dist<EMA_PROXIMITY_PCT),
+               ("rsi_lt_40",         r3<40),
+               ("bias_15m_bull",     b15 is None or b15=="bull"),
+               (f"volume",           av==0 or lv>=av*VOLUME_MULT)]
               if bull else
-              [(f"Below EMA", entry_price<e20),
-               (f"Within {EMA_PROXIMITY_PCT}%", ep_dist<EMA_PROXIMITY_PCT),
-               ("RSI>60", r3>60),
-               ("15m bear", b15 is None or b15=="bear"),
-               (f"Vol>={VOLUME_MULT}x", av==0 or lv>=av*VOLUME_MULT)])
+              [(f"below_ema",        entry_price<e20),
+               (f"ema_proximity",    ep_dist<EMA_PROXIMITY_PCT),
+               ("rsi_gt_60",         r3>60),
+               ("bias_15m_bear",     b15 is None or b15=="bear"),
+               (f"volume",           av==0 or lv>=av*VOLUME_MULT)])
     print(f"\n  {'LONG' if bull else 'SHORT'} checks:")
     ok=True
-    for lb,ps in checks: print(f"  {'✅' if ps else '🚫'} {lb}"); ok=ok and ps
-    if not ok: print("🚫 BLOCKED"); return
+    for lb,ps in checks:
+        print(f"  {'✅' if ps else '🚫'} {lb}")
+        if not ps: reject(f"core_{lb}"); ok=False
+    if not ok: return
 
     # Stops + targets
     sp  = calc_entry_stop(setup_bar, entry_price, bull)
@@ -1063,6 +1087,8 @@ def strategy_loop(order_sym, acct):
             bar_ts = datetime.now(timezone.utc)
         if bar_ts < datetime.now(timezone.utc) - timedelta(minutes=11):
             continue  # historical bar — accumulated for warmup, strategy skipped
+        _diag["bars_live"]["5m"] += 1
+        _diag["last_bar_time"] = bar_ts.strftime("%Y-%m-%d %H:%M UTC")
         print(f"  ▶ Live 5m bar @ {bar_ts.strftime('%H:%M UTC')} → running strategy")
         try:
             on_bar(snapshot, acct, order_sym)
