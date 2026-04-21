@@ -810,28 +810,30 @@ def start_eod_summary():
 def on_bar(bars, acct, sym):
     """Called on every completed 5-minute bar. Entry via limit order, exits via market."""
     print(f"\n{'='*55}\n  BAR CLOSE {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n{'='*55}")
+
+    # Always compute indicators and update state so dashboard stays current
+    if len(bars) >= ATR_PERIOD + EMA_PERIOD:
+        cl=[b.close for b in bars]; price=cl[-1]
+        e20=ema(cl,EMA_PERIOD); at=atr(bars,ATR_PERIOD)
+        sl=ema_slope(cl,EMA_PERIOD); b15=bias15m()
+        r3=rsi(cl[:-1],RSI_PERIOD) if len(cl)>1 else rsi(cl,RSI_PERIOD)
+        av=avgvol(bars,20); lv=bars[-1].volume
+        dp=abs((price-e20)/e20)*100 if e20 else 0
+        pdh,pdl,pdc=get_prev_day_levels()
+        _state.update({"price":price,"ema20":e20,"rsi3":r3,"atr":at,
+                       "bias15m":b15,"slope":sl,"last_bar":bars[-1].date,
+                       "pdh":pdh,"pdl":pdl,"pdc":pdc})
+        print(f"  {price:.2f} EMA:{e20:.2f}({dp:.1f}%,{'↑' if sl and sl>0 else '↓'}) RSI:{r3:.1f} ATR:{at:.2f}"
+              if all([e20,r3,at]) else f"  Price:{price:.2f}")
+        if pdh: print(f"  PDH:{pdh:.2f} PDL:{pdl:.2f} PDC:{pdc:.2f}")
+    else:
+        print(f"⏳ Warming up ({len(bars)} bars)"); return
+
     if not mkt(): print("🕐 Outside market hours"); return
     if avoid(): print("⏳ Open/close buffer"); return
     nn,nl=news()
     if nn: print(f"📰 News:{nl}"); return
     if dead_zone(): print(f"😴 Dead zone (12:00–1:30 PM ET)"); return
-    if len(bars)<ATR_PERIOD+EMA_PERIOD: print(f"⏳ Warming up ({len(bars)} bars)"); return
-
-    cl=[b.close for b in bars]; price=cl[-1]
-    e20=ema(cl,EMA_PERIOD); at=atr(bars,ATR_PERIOD)
-    sl=ema_slope(cl,EMA_PERIOD); b15=bias15m()
-    r3=rsi(cl[:-1],RSI_PERIOD) if len(cl)>1 else rsi(cl,RSI_PERIOD)  # RSI at setup bar
-    av=avgvol(bars,20); lv=bars[-1].volume
-    dp=abs((price-e20)/e20)*100 if e20 else 0
-    pdh,pdl,pdc=get_prev_day_levels()
-
-    _state.update({"price":price,"ema20":e20,"rsi3":r3,"atr":at,
-                   "bias15m":b15,"slope":sl,"last_bar":bars[-1].date,
-                   "pdh":pdh,"pdl":pdl,"pdc":pdc})
-
-    print(f"  {price:.2f} EMA:{e20:.2f}({dp:.1f}%,{'↑' if sl and sl>0 else '↓'}) RSI:{r3:.1f} ATR:{at:.2f}"
-          if all([e20,r3,at]) else f"  Price:{price:.2f}")
-    if pdh: print(f"  PDH:{pdh:.2f} PDL:{pdl:.2f} PDC:{pdc:.2f}")
 
     cur=get_mes_position(acct)
     if cur!=0:
@@ -1061,6 +1063,7 @@ def strategy_loop(order_sym, acct):
             bar_ts = datetime.now(timezone.utc)
         if bar_ts < datetime.now(timezone.utc) - timedelta(minutes=11):
             continue  # historical bar — accumulated for warmup, strategy skipped
+        print(f"  ▶ Live 5m bar @ {bar_ts.strftime('%H:%M UTC')} → running strategy")
         try:
             on_bar(snapshot, acct, order_sym)
         except Exception as e:
