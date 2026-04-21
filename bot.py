@@ -133,8 +133,10 @@ def _fetch_td(interval="5min", outputsize=100):
     # SPY is always available on free tier and is 99.9% correlated with MES/ES
     # Use it for indicator warmup (EMA/RSI direction is identical)
     try:
+        # Use ES1! (E-mini S&P front month) — same price scale as MES (~5200)
+        # SPY (~520) was 10x wrong and corrupted all indicator calculations
         r = requests.get("https://api.twelvedata.com/time_series",
-            params={"symbol": "SPY", "interval": interval, "outputsize": outputsize,
+            params={"symbol": "ES1!", "interval": interval, "outputsize": outputsize,
                     "apikey": TWELVE_DATA_KEY, "order": "ASC", "timezone": "UTC"}, timeout=15)
         if r.status_code != 200:
             print(f"⚠️ TwelveData({interval}) HTTP {r.status_code}")
@@ -146,7 +148,7 @@ def _fetch_td(interval="5min", outputsize=100):
         bars = [Bar(i["datetime"],float(i["open"]),float(i["high"]),float(i["low"]),
                     float(i["close"]),int(i.get("volume",0))) for i in d.get("values",[])]
         if bars:
-            print(f"  TwelveData({interval}) OK — {len(bars)} SPY bars loaded for indicator warmup")
+            print(f"  TwelveData({interval}) OK — {len(bars)} ES1! bars loaded for indicator warmup")
         return bars
     except Exception as e:
         print(f"⚠️ TwelveData({interval}): {e}")
