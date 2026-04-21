@@ -121,25 +121,27 @@ def sms(msg):
 # ── Historical bar bootstrap (indicator warmup) ────────────────────────────────
 def _fetch_td(interval="5min", outputsize=100):
     if not TWELVE_DATA_KEY: return []
-    # Try multiple symbol formats — Twelve Data is picky about futures symbols
-    for symbol, exchange in [("MES1!", None), ("MES", "CME"), ("/MES", None)]:
-        try:
-            params = {"symbol": symbol, "interval": interval, "outputsize": outputsize,
-                      "apikey": TWELVE_DATA_KEY, "order": "ASC", "timezone": "UTC"}
-            if exchange:
-                params["exchange"] = exchange
-            r = requests.get("https://api.twelvedata.com/time_series", params=params, timeout=15)
-            if r.status_code != 200: continue
-            d = r.json()
-            if d.get("status") == "error": continue
-            bars = [Bar(i["datetime"],float(i["open"]),float(i["high"]),float(i["low"]),
-                        float(i["close"]),int(i.get("volume",0))) for i in d.get("values",[])]
-            if bars:
-                print(f"  TwelveData({interval}) OK with symbol={symbol}")
-                return bars
-        except Exception as e:
-            print(f"⚠️ TwelveData({interval}) symbol={symbol}: {e}")
-    return []
+    # SPY is always available on free tier and is 99.9% correlated with MES/ES
+    # Use it for indicator warmup (EMA/RSI direction is identical)
+    try:
+        r = requests.get("https://api.twelvedata.com/time_series",
+            params={"symbol": "SPY", "interval": interval, "outputsize": outputsize,
+                    "apikey": TWELVE_DATA_KEY, "order": "ASC", "timezone": "UTC"}, timeout=15)
+        if r.status_code != 200:
+            print(f"⚠️ TwelveData({interval}) HTTP {r.status_code}")
+            return []
+        d = r.json()
+        if d.get("status") == "error":
+            print(f"⚠️ TwelveData({interval}) error: {d.get('message','')}")
+            return []
+        bars = [Bar(i["datetime"],float(i["open"]),float(i["high"]),float(i["low"]),
+                    float(i["close"]),int(i.get("volume",0))) for i in d.get("values",[])]
+        if bars:
+            print(f"  TwelveData({interval}) OK — {len(bars)} SPY bars loaded for indicator warmup")
+        return bars
+    except Exception as e:
+        print(f"⚠️ TwelveData({interval}): {e}")
+        return []
 
 def _fetch_yf(ticker, period, interval, retries=3):
     for attempt in range(retries):
