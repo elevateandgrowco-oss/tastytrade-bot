@@ -178,9 +178,9 @@ def _fetch_yf(ticker, period, interval, retries=3):
 def bootstrap_bars():
     global _bars_5m, _bars_15m, _bars_1day
     print("📊 Loading historical bars...")
-    b5  = _fetch_td("5min", 100)  or _fetch_yf("MES=F","2d","5m")  or _fetch_yf("ES=F","2d","5m")
-    b15 = _fetch_td("15min",100)  or _fetch_yf("MES=F","5d","15m") or _fetch_yf("ES=F","5d","15m")
-    b1d = _fetch_td("1day", 30)   or _fetch_yf("MES=F","60d","1d") or _fetch_yf("ES=F","60d","1d")
+    b5  = _fetch_yf("MES=F","2d","5m")  or _fetch_yf("ES=F","2d","5m")
+    b15 = _fetch_yf("MES=F","5d","15m") or _fetch_yf("ES=F","5d","15m")
+    b1d = _fetch_yf("MES=F","60d","1d") or _fetch_yf("ES=F","60d","1d")
     with _bars_lock:
         _bars_5m   = b5[-150:]  if b5  else []
         _bars_15m  = b15[-150:] if b15 else []
