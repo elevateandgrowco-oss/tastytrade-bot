@@ -664,7 +664,9 @@ def do_login():
     challenge_token=r.headers.get("X-Tastyworks-Challenge-Token","")
     challenge_headers={"Content-Type":"application/json","X-Tastyworks-Challenge-Token":challenge_token}
     auth["challenge_token"]=challenge_token; auth["challenge_headers"]=challenge_headers
-    auth["step"]="device_code"; auth["got_input"].clear(); auth["got_input"].wait(timeout=600)
+    auth["step"]="device_code"; auth["got_input"].clear()
+    sms(f"🔐 MES bot needs device verification.\nCheck your phone for a Tastytrade SMS code, then visit:\nhttps://tastytrade-bot-production.up.railway.app\nYou have 30 minutes.")
+    auth["got_input"].wait(timeout=1800)
     device_code=auth["input"]; auth["input"]=None; auth["got_input"].clear()
     if not device_code: raise Exception("Timed out waiting for device code")
     r2=requests.post(f"{TT_BASE_URL}/device-challenge",json={"code":device_code},headers=challenge_headers)
@@ -673,7 +675,9 @@ def do_login():
     needs_otp="X-Tastyworks-OTP" in str(r2_data.get("redirect",{}).get("required-headers",[]))
     final_headers=dict(challenge_headers)
     if needs_otp:
-        auth["step"]="otp_code"; auth["got_input"].clear(); auth["got_input"].wait(timeout=300)
+        auth["step"]="otp_code"; auth["got_input"].clear()
+        sms(f"🔐 MES bot needs 2FA code. Visit:\nhttps://tastytrade-bot-production.up.railway.app\nYou have 10 minutes.")
+        auth["got_input"].wait(timeout=600)
         otp=auth["input"]; auth["input"]=None; auth["got_input"].clear()
         if not otp: raise Exception("Timed out waiting for OTP")
         final_headers["X-Tastyworks-OTP"]=otp
