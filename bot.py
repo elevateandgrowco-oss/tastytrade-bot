@@ -172,7 +172,10 @@ def _fetch_yf(ticker, period, interval, retries=3):
         except Exception as e:
             print(f"⚠️ yfinance {ticker} attempt {attempt+1}/{retries}: {e}")
             if attempt < retries - 1:
-                time.sleep(10 + attempt * 10)
+                rate_limited = "rate limit" in str(e).lower() or "too many requests" in str(e).lower()
+                wait = 90 if rate_limited else 10 + attempt * 10
+                if rate_limited: print(f"  Rate limited — waiting {wait}s")
+                time.sleep(wait)
     return []
 
 def bootstrap_bars():
