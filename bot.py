@@ -11,7 +11,7 @@ Execution improvements over polling version:
   - Exits still use market orders for immediate fill
 """
 
-import os, json, time, threading, asyncio, requests, websockets, yfinance as yf
+import os, json, time, threading, asyncio, requests, websockets
 import queue as _queue_mod
 from datetime import datetime, timezone, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -34,7 +34,6 @@ SESSION_FILE = os.path.join(DATA_DIR, "session.json")
 LOG_FILE     = os.path.join(DATA_DIR, "trades.json")
 
 TT_SESSION_TOKEN_ENV  = os.getenv("TT_SESSION_TOKEN", "")
-TWELVE_DATA_KEY       = os.getenv("TWELVE_DATA_API_KEY", "")
 LIMIT_ORDER_TIMEOUT   = int(os.getenv("LIMIT_ORDER_TIMEOUT", "120"))  # secs before auto-cancel
 
 # ── Strategy params ────────────────────────────────────────────────────────────
@@ -127,68 +126,6 @@ def sms(msg):
             data={"From":TWILIO_FROM,"To":ALERT_TO,"Body":msg}, timeout=10)
     except Exception as e: print(f"⚠️ SMS: {e}")
 
-# ── Historical bar bootstrap (indicator warmup) ────────────────────────────────
-def _fetch_td(interval="5min", outputsize=100):
-    if not TWELVE_DATA_KEY: return []
-    # SPY is always available on free tier and is 99.9% correlated with MES/ES
-    # Use it for indicator warmup (EMA/RSI direction is identical)
-    try:
-        # Use ES1! (E-mini S&P front month) — same price scale as MES (~5200)
-        # SPY (~520) was 10x wrong and corrupted all indicator calculations
-        r = requests.get("https://api.twelvedata.com/time_series",
-            params={"symbol": "ES1!", "interval": interval, "outputsize": outputsize,
-                    "apikey": TWELVE_DATA_KEY, "order": "ASC", "timezone": "UTC"}, timeout=15)
-        if r.status_code != 200:
-            print(f"⚠️ TwelveData({interval}) HTTP {r.status_code}")
-            return []
-        d = r.json()
-        if d.get("status") == "error":
-            print(f"⚠️ TwelveData({interval}) error: {d.get('message','')}")
-            return []
-        bars = [Bar(i["datetime"],float(i["open"]),float(i["high"]),float(i["low"]),
-                    float(i["close"]),int(i.get("volume",0))) for i in d.get("values",[])]
-        if bars:
-            print(f"  TwelveData({interval}) OK — {len(bars)} ES1! bars loaded for indicator warmup")
-        return bars
-    except Exception as e:
-        print(f"⚠️ TwelveData({interval}): {e}")
-        return []
-
-def _fetch_yf(ticker, period, interval, retries=3):
-    for attempt in range(retries):
-        try:
-            df = yf.download(ticker, period=period, interval=interval,
-                             progress=False, auto_adjust=True)
-            if df.empty:
-                if attempt < retries - 1:
-                    time.sleep(5 + attempt * 5)
-                continue
-            bars = []
-            for ts, row in df.iterrows():
-                def _v(col):
-                    v = row[col]; return float(v.iloc[0] if hasattr(v, "iloc") else v)
-                bars.append(Bar(str(ts),_v("Open"),_v("High"),_v("Low"),_v("Close"),int(_v("Volume"))))
-            if bars: return bars
-        except Exception as e:
-            print(f"⚠️ yfinance {ticker} attempt {attempt+1}/{retries}: {e}")
-            if attempt < retries - 1:
-                rate_limited = "rate limit" in str(e).lower() or "too many requests" in str(e).lower()
-                wait = 90 if rate_limited else 10 + attempt * 10
-                if rate_limited: print(f"  Rate limited — waiting {wait}s")
-                time.sleep(wait)
-    return []
-
-def bootstrap_bars():
-    global _bars_5m, _bars_15m, _bars_1day
-    print("📊 Loading historical bars...")
-    b5  = _fetch_yf("MES=F","2d","5m")  or _fetch_yf("ES=F","2d","5m")
-    b15 = _fetch_yf("MES=F","5d","15m") or _fetch_yf("ES=F","5d","15m")
-    b1d = _fetch_yf("MES=F","60d","1d") or _fetch_yf("ES=F","60d","1d")
-    with _bars_lock:
-        _bars_5m   = b5[-150:]  if b5  else []
-        _bars_15m  = b15[-150:] if b15 else []
-        _bars_1day = b1d[-60:]  if b1d else []
-    print(f"  5m:{len(_bars_5m)} 15m:{len(_bars_15m)} 1d:{len(_bars_1day)} bars loaded")
 
 # ── Indicators ─────────────────────────────────────────────────────────────────
 def ema(c,p):
@@ -1151,8 +1088,6 @@ def main():
     while not order_sym:
         try: order_sym, streamer_sym = get_mes_symbols()
         except Exception as e: print(f"❌ Symbol:{e}"); time.sleep(30)
-
-    bootstrap_bars()
 
     # Start strategy processor thread
     t=threading.Thread(target=strategy_loop, args=(order_sym,acct), daemon=True)
