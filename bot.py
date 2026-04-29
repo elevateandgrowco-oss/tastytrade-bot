@@ -40,25 +40,24 @@ LIMIT_ORDER_TIMEOUT   = int(os.getenv("LIMIT_ORDER_TIMEOUT", "120"))  # secs bef
 TICK_SIZE          = 0.25
 SCALP_TICKS        = 8
 MAX_BAR_TICKS      = 22
-PDH_PDL_BUFFER     = 2.0
+PDH_PDL_BUFFER     = 1.0        # was 2.0 — tighter, fewer blocks near PDH/PDL
 MIN_STOP_PTS       = 0.5
 EMA_PERIOD         = 20
 RSI_PERIOD         = 3
 ATR_PERIOD         = 14
 EMA_PROXIMITY_PCT  = 0.5
-VOLUME_MULT        = 1.2
-NEWS_BLOCK_MIN     = 15
+NEWS_BLOCK_MIN     = 10         # was 15 — shorter news blackout
 AVOID_OPEN_MINUTES = 15
-AVOID_CLOSE_MINUTES= 30
+AVOID_CLOSE_MINUTES= 15         # was 30 — allow trading until 3:45 PM
 DEAD_ZONE_START    = (12, 0)
-DEAD_ZONE_END      = (13, 30)
+DEAD_ZONE_END      = (12, 30)   # was 13:30 — cut lunch dead zone to 30 min
 MAX_TRADES_PER_DAY = 3
 MAX_CONTRACTS      = int(os.getenv("MAX_CONTRACTS", "3"))
 RISK_PCT           = float(os.getenv("RISK_PCT", "1.0"))
 MAX_DAILY_LOSS     = float(os.getenv("MAX_DAILY_LOSS", "150"))
-MIN_ATR            = float(os.getenv("MIN_ATR", "3.0"))
+MIN_ATR            = float(os.getenv("MIN_ATR", "2.0"))  # was 3.0
 TRAIL_POINTS       = float(os.getenv("TRAIL_POINTS", "2.0"))
-NEWS_TIMES_ET      = [(8,30),(10,0),(14,0),(14,30)]
+NEWS_TIMES_ET      = [(8,30),(10,0),(14,0)]  # removed 14:30 — 2:30 PM is minor
 
 # ── Shared state ───────────────────────────────────────────────────────────────
 _state = {"price":None,"ema20":None,"rsi3":None,"atr":None,
@@ -246,11 +245,20 @@ def dead_zone():
 
 # ── Persistence ────────────────────────────────────────────────────────────────
 def load_log():
-    if not os.path.exists(LOG_FILE): return {"trades":[]}
-    with open(LOG_FILE) as f: return json.load(f)
+    if not os.path.exists(LOG_FILE): return {"trades":[], "daily_rejections":{}}
+    data = json.load(open(LOG_FILE))
+    if "daily_rejections" not in data: data["daily_rejections"] = {}
+    return data
 
 def save_log(log):
     with open(LOG_FILE,"w") as f: json.dump(log,f,indent=2)
+
+def persist_rejections():
+    """Save today's in-memory rejection counts to trades.json so they survive restarts."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    log = load_log()
+    log["daily_rejections"][today] = dict(_diag["rejections"])
+    save_log(log)
 
 def todays_trades(log):
     t=datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -498,8 +506,20 @@ async def dxlink_stream(streamer_sym):
         print(f"✅ Subscribed: {[s['symbol'] for s in subs]}")
         _state["stream"] = "live"
 
+        # ── Proactive keepalive task (DXLink requires client to send these) ───────
+        async def _keepalive_task():
+            while True:
+                await asyncio.sleep(25)
+                try:
+                    await ws.send(json.dumps({"type":"KEEPALIVE","channel":0}))
+                except Exception:
+                    break
+
+        keepalive_task = asyncio.create_task(_keepalive_task())
+
         # ── Event loop ─────────────────────────────────────────────────────────
-        async for raw in ws:
+        try:
+          async for raw in ws:
             try:
                 msg = json.loads(raw)
             except: continue
@@ -510,12 +530,25 @@ async def dxlink_stream(streamer_sym):
                 await ws.send(json.dumps({"type":"KEEPALIVE","channel":0}))
                 continue
 
+            # Handle periodic re-auth challenges from DXLink
+            if t == "AUTH_STATE":
+                state = msg.get("state","")
+                if state == "AUTHORIZED":
+                    print("✅ DXLink re-authorized")
+                else:
+                    print(f"🔑 DXLink re-auth ({state}) — responding")
+                    await ws.send(json.dumps({"type":"AUTH","channel":0,"token":token}))
+                continue
+
             if t == "FEED_CONFIG":
                 field_map.update(msg.get("eventFields",{}))
                 continue
 
             if t == "ERROR":
                 print(f"⚠️ DXLink error: {msg}")
+                if msg.get("error") == "UNAUTHORIZED":
+                    # Fetch a fresh streamer token and force reconnect
+                    break
                 continue
 
             if t != "FEED_DATA":
@@ -544,6 +577,8 @@ async def dxlink_stream(streamer_sym):
                         i += 1 + len(fields)
                     else:
                         i += 1
+        finally:
+            keepalive_task.cancel()
 
 async def stream_with_reconnect(streamer_sym):
     """Runs dxlink_stream forever with automatic reconnection."""
@@ -716,8 +751,19 @@ class Handler(BaseHTTPRequestHandler):
             tok=auth.get("session_token") or ""
             self.send_response(200); self.send_header("Content-Type","text/plain"); self.end_headers()
             self.wfile.write(tok.encode()); return
+        if self.path=="/log":
+            body = json.dumps(load_log(), indent=2).encode()
+            self.send_response(200); self.send_header("Content-Type","application/json"); self.end_headers()
+            self.wfile.write(body); return
         if self.path=="/debug":
             d=_diag; rj=sorted(d["rejections"].items(),key=lambda x:-x[1])
+            # Also pull persisted rejections from disk for today
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            persisted = load_log().get("daily_rejections",{}).get(today,{})
+            merged = dict(persisted)
+            for r,c in d["rejections"].items():
+                merged[r] = max(merged.get(r,0), c)
+            rj = sorted(merged.items(), key=lambda x:-x[1])
             lines=[
                 f"=== BAR COUNTS ===",
                 f"DXLink bars received: 5m={d['bars_received']['5m']} 15m={d['bars_received']['15m']} 1d={d['bars_received']['1day']}",
@@ -725,7 +771,7 @@ class Handler(BaseHTTPRequestHandler):
                 f"on_bar() calls: {d['on_bar_calls']}",
                 f"Last live bar: {d['last_bar_time'] or 'NONE'}",
                 f"",
-                f"=== REJECTION COUNTS ===",
+                f"=== REJECTION COUNTS (today, persisted across restarts) ===",
             ] + ([f"{r}: {c}" for r,c in rj] if rj else ["(none yet)"])
             self.send_response(200); self.send_header("Content-Type","text/plain"); self.end_headers()
             self.wfile.write("\n".join(lines).encode()); return
@@ -803,6 +849,7 @@ def on_bar(bars, acct, sym):
     def reject(reason):
         _diag["rejections"][reason] = _diag["rejections"].get(reason, 0) + 1
         print(f"🚫 {reason}")
+        persist_rejections()
 
     if not mkt(): reject("outside_market_hours"); return
     if avoid(): reject("open_close_buffer"); return
@@ -936,15 +983,13 @@ def on_bar(bars, acct, sym):
     ep_dist = abs((entry_price-e20)/e20)*100 if e20 else 0
     checks = ([(f"above_ema",        entry_price>e20),
                (f"ema_proximity",    ep_dist<EMA_PROXIMITY_PCT),
-               ("rsi_lt_40",         r3<40),
-               ("bias_15m_bull",     b15 is None or b15=="bull"),
-               (f"volume",           av==0 or lv>=av*VOLUME_MULT)]
+               ("rsi_lt_50",         r3<50),      # was < 40
+               ("bias_15m_bull",     b15 is None or b15=="bull")]
               if bull else
               [(f"below_ema",        entry_price<e20),
                (f"ema_proximity",    ep_dist<EMA_PROXIMITY_PCT),
-               ("rsi_gt_60",         r3>60),
-               ("bias_15m_bear",     b15 is None or b15=="bear"),
-               (f"volume",           av==0 or lv>=av*VOLUME_MULT)])
+               ("rsi_gt_50",         r3>50),      # was > 60
+               ("bias_15m_bear",     b15 is None or b15=="bear")])
     print(f"\n  {'LONG' if bull else 'SHORT'} checks:")
     ok=True
     for lb,ps in checks:
@@ -976,12 +1021,27 @@ def on_bar(bars, acct, sym):
 
 # ── Watchdog — alerts if stream goes silent during market hours ────────────────
 def watchdog_loop():
-    """Texts owner if no 5m bar received for 20+ minutes during market hours."""
+    """Texts owner if no 5m bar received for 20+ minutes during market hours.
+    Also auto-exits at 4:15 PM ET so Railway cron can start fresh each morning."""
     SILENCE_LIMIT = 20 * 60   # 20 minutes without a bar = something is wrong
+    CLOSE_HOUR, CLOSE_MIN = 16, 15  # 4:15 PM ET — safe margin after 4:00 PM close
     alerted = False
     sms("✅ MES bot started — watchdog active")
     while True:
         time.sleep(60)
+
+        # Auto-exit after market close so Railway cron can start fresh tomorrow
+        et = now_et()
+        if et.hour > CLOSE_HOUR or (et.hour == CLOSE_HOUR and et.minute >= CLOSE_MIN):
+            log = load_log()
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            closed = [t for t in log["trades"] if t["timestamp"].startswith(today) and t.get("closed")]
+            pnl = sum(t.get("pnl_usd", 0) for t in closed)
+            wins = sum(1 for t in closed if t.get("pnl_usd", 0) > 0)
+            sms(f"🔔 MES session closed. {'No trades today' if not closed else f'{wins}W/{len(closed)-wins}L | ${pnl:+.2f}'} — restarting tomorrow 9AM ET")
+            print(f"\n🔔 Auto-exit at {et.strftime('%I:%M %p ET')} — session complete")
+            import os as _os; _os.kill(_os.getpid(), 15)  # SIGTERM — clean shutdown
+
         if not mkt():
             alerted = False  # reset alert state outside market hours
             continue
