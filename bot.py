@@ -790,14 +790,17 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200); self.send_header("Content-Type","text/plain"); self.end_headers()
             self.wfile.write("\n".join(lines).encode()); return
         step=auth["step"]
-        if step=="done":
-            html=dashboard_html(load_log())
-        else:
-            msg={"device_code":"<h2>Step 1 of 2: Device Verification</h2><p>Enter the SMS code Tastytrade sent:</p>",
-                 "otp_code":"<h2>Step 2 of 2: Two-Factor Auth</h2><p>Enter the 2FA code:</p>"}.get(step,"<h2>MES Bot — Starting up...</h2>")
-            form=f"""<form method='POST' action='/code'><input name='code' style='font-size:28px;width:160px;text-align:center' autofocus>
-                <br><br><button type='submit' style='font-size:18px;padding:10px 30px'>Submit</button></form>""" if step in ("device_code","otp_code") else ""
-            html=f"<html><body style='font-family:sans-serif;max-width:500px;margin:80px auto;text-align:center'>{msg}{form}</body></html>"
+        try:
+            if step=="done":
+                html=dashboard_html(load_log())
+            else:
+                msg={"device_code":"<h2>Step 1 of 2: Device Verification</h2><p>Enter the SMS code Tastytrade sent:</p>",
+                     "otp_code":"<h2>Step 2 of 2: Two-Factor Auth</h2><p>Enter the 2FA code:</p>"}.get(step,"<h2>MES Bot — Starting up...</h2>")
+                form=f"""<form method='POST' action='/code'><input name='code' style='font-size:28px;width:160px;text-align:center' autofocus>
+                    <br><br><button type='submit' style='font-size:18px;padding:10px 30px'>Submit</button></form>""" if step in ("device_code","otp_code") else ""
+                html=f"<html><body style='font-family:sans-serif;max-width:500px;margin:80px auto;text-align:center'>{msg}{form}</body></html>"
+        except Exception as e:
+            html=f"<pre>Error: {e}</pre>"
         self.send_response(200); self.send_header("Content-Type","text/html"); self.end_headers()
         self.wfile.write(html.encode())
     def do_POST(self):
