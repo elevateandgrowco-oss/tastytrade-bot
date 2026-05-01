@@ -748,6 +748,7 @@ h1{{font-size:18px;font-weight:700;margin-bottom:14px}}</style></head><body>
 </body></html>"""
 
 class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.0"
     def log_message(self,*a): pass
     def do_GET(self):
         if self.path=="/stats":
