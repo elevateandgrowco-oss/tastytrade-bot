@@ -519,7 +519,13 @@ async def dxlink_stream(streamer_sym):
 
         # ── Event loop ─────────────────────────────────────────────────────────
         try:
-          async for raw in ws:
+          while True:
+            try:
+                raw = await asyncio.wait_for(ws.recv(), timeout=300)
+            except asyncio.TimeoutError:
+                if mkt():
+                    raise Exception("DXLink silent 5min during market hours — reconnecting")
+                continue
             try:
                 msg = json.loads(raw)
             except: continue
