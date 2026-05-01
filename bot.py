@@ -1047,13 +1047,20 @@ def watchdog_loop():
     SILENCE_LIMIT = 20 * 60   # 20 minutes without a bar = something is wrong
     CLOSE_HOUR, CLOSE_MIN = 16, 15  # 4:15 PM ET — safe margin after 4:00 PM close
     alerted = False
-    sms("✅ MES bot started — watchdog active")
+    _exit_sent = False
     while True:
         time.sleep(60)
 
         # Auto-exit after market close so Railway cron can start fresh tomorrow
         et = now_et()
-        if et.hour > CLOSE_HOUR or (et.hour == CLOSE_HOUR and et.minute >= CLOSE_MIN):
+        if (et.hour > CLOSE_HOUR or (et.hour == CLOSE_HOUR and et.minute >= CLOSE_MIN)) and not _exit_sent:
+            # Only exit if we actually received bars this session — prevents a crash
+            # loop where Railway restarts overnight and the watchdog immediately kills again
+            with _last_bar_lock:
+                had_bars = _last_bar_ts is not None
+            if not had_bars:
+                alerted = False
+                continue  # overnight restart — no bars, just wait
             log = load_log()
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             closed = [t for t in log["trades"] if t["timestamp"].startswith(today) and t.get("closed")]
@@ -1061,6 +1068,7 @@ def watchdog_loop():
             wins = sum(1 for t in closed if t.get("pnl_usd", 0) > 0)
             sms(f"🔔 MES session closed. {'No trades today' if not closed else f'{wins}W/{len(closed)-wins}L | ${pnl:+.2f}'} — restarting tomorrow 9AM ET")
             print(f"\n🔔 Auto-exit at {et.strftime('%I:%M %p ET')} — session complete")
+            _exit_sent = True
             import os as _os; _os.kill(_os.getpid(), 15)  # SIGTERM — clean shutdown
 
         if not mkt():
