@@ -15,6 +15,9 @@ import os, json, time, threading, asyncio, requests, websockets
 import queue as _queue_mod
 from datetime import datetime, timezone, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from socketserver import ThreadingMixIn
+class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+    daemon_threads = True
 from urllib.parse import parse_qs
 
 # ── Config ─────────────────────────────────────────────────────────────────────
@@ -811,7 +814,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(b"<html><body style='font-family:sans-serif;max-width:500px;margin:80px auto;text-align:center'><h2>Submitted!</h2><p><a href='/'>Back</a></p></body></html>")
 
 def start_web_server():
-    s=HTTPServer(("0.0.0.0",PORT),Handler)
+    s=ThreadedHTTPServer(("0.0.0.0",PORT),Handler)
     threading.Thread(target=s.serve_forever,daemon=True).start()
     print(f"🌐 Web server on port {PORT}")
 
