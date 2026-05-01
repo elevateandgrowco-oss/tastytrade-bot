@@ -14,10 +14,7 @@ Execution improvements over polling version:
 import os, json, time, threading, asyncio, requests, websockets
 import queue as _queue_mod
 from datetime import datetime, timezone, timedelta
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from socketserver import ThreadingMixIn
-class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
-    daemon_threads = True
+from flask import Flask, jsonify, Response as FlaskResponse, request as flask_request
 from urllib.parse import parse_qs
 
 # ── Config ─────────────────────────────────────────────────────────────────────
@@ -747,77 +744,77 @@ h1{{font-size:18px;font-weight:700;margin-bottom:14px}}</style></head><body>
 <p style="text-align:center;color:#334155;font-size:11px;padding:8px">Refreshes every 15s · {now_et().strftime('%I:%M %p ET')}</p>
 </body></html>"""
 
-class Handler(BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.0"
-    def log_message(self,*a): pass
-    def do_GET(self):
-        if self.path=="/stats":
-            try:
-                log=load_log(); today=datetime.now(timezone.utc).strftime("%Y-%m-%d")
-                today_ts=[t for t in log.get("trades",[]) if t.get("timestamp","").startswith(today)]
-                closed=[t for t in today_ts if t.get("closed")]
-                pnl=sum(t.get("pnl_usd",0) for t in closed)
-                last=next(({"side":t["action"],"symbol":"MES","price":t.get("price"),"time":t.get("timestamp","")[:16]} for t in reversed(log.get("trades",[])) if t.get("order_placed")),None)
-                ot=open_trade(log)
-                data={"lastTrade":last,"openTrade":{"side":ot["action"],"price":ot.get("price")} if ot else None,"todayTrades":len(today_ts),"todayPnl":round(pnl,2)}
-            except Exception as e:
-                data={"error":str(e)}
-            body=json.dumps(data).encode()
-            self.send_response(200); self.send_header("Content-Type","application/json"); self.end_headers()
-            self.wfile.write(body); return
-        if self.path=="/token":
-            tok=auth.get("session_token") or ""
-            self.send_response(200); self.send_header("Content-Type","text/plain"); self.end_headers()
-            self.wfile.write(tok.encode()); return
-        if self.path=="/log":
-            body = json.dumps(load_log(), indent=2).encode()
-            self.send_response(200); self.send_header("Content-Type","application/json"); self.end_headers()
-            self.wfile.write(body); return
-        if self.path=="/debug":
-            d=_diag; rj=sorted(d["rejections"].items(),key=lambda x:-x[1])
-            # Also pull persisted rejections from disk for today
-            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            persisted = load_log().get("daily_rejections",{}).get(today,{})
-            merged = dict(persisted)
-            for r,c in d["rejections"].items():
-                merged[r] = max(merged.get(r,0), c)
-            rj = sorted(merged.items(), key=lambda x:-x[1])
-            lines=[
-                f"=== BAR COUNTS ===",
-                f"DXLink bars received: 5m={d['bars_received']['5m']} 15m={d['bars_received']['15m']} 1d={d['bars_received']['1day']}",
-                f"Live bars (>11min filter): 5m={d['bars_live']['5m']}",
-                f"on_bar() calls: {d['on_bar_calls']}",
-                f"Last live bar: {d['last_bar_time'] or 'NONE'}",
-                f"",
-                f"=== REJECTION COUNTS (today, persisted across restarts) ===",
-            ] + ([f"{r}: {c}" for r,c in rj] if rj else ["(none yet)"])
-            self.send_response(200); self.send_header("Content-Type","text/plain"); self.end_headers()
-            self.wfile.write("\n".join(lines).encode()); return
-        step=auth["step"]
-        try:
-            if step=="done":
-                html=dashboard_html(load_log())
-            else:
-                msg={"device_code":"<h2>Step 1 of 2: Device Verification</h2><p>Enter the SMS code Tastytrade sent:</p>",
-                     "otp_code":"<h2>Step 2 of 2: Two-Factor Auth</h2><p>Enter the 2FA code:</p>"}.get(step,"<h2>MES Bot — Starting up...</h2>")
-                form=f"""<form method='POST' action='/code'><input name='code' style='font-size:28px;width:160px;text-align:center' autofocus>
-                    <br><br><button type='submit' style='font-size:18px;padding:10px 30px'>Submit</button></form>""" if step in ("device_code","otp_code") else ""
-                html=f"<html><body style='font-family:sans-serif;max-width:500px;margin:80px auto;text-align:center'>{msg}{form}</body></html>"
-        except Exception as e:
-            html=f"<pre>Error: {e}</pre>"
-        self.send_response(200); self.send_header("Content-Type","text/html"); self.end_headers()
-        self.wfile.write(html.encode())
-    def do_POST(self):
-        n=int(self.headers.get("Content-Length",0)); body=self.rfile.read(n).decode()
-        code=parse_qs(body).get("code",[""])[0].strip()
-        if code: auth["input"]=code; auth["got_input"].set()
-        self.send_response(200); self.send_header("Content-Type","text/html"); self.end_headers()
-        self.wfile.write(b"<html><body style='font-family:sans-serif;max-width:500px;margin:80px auto;text-align:center'><h2>Submitted!</h2><p><a href='/'>Back</a></p></body></html>")
+_app = Flask(__name__)
+_app.logger.disabled = True
+import logging; logging.getLogger("werkzeug").disabled = True
+
+@_app.route("/stats")
+def route_stats():
+    try:
+        log=load_log(); today=datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today_ts=[t for t in log.get("trades",[]) if t.get("timestamp","").startswith(today)]
+        closed=[t for t in today_ts if t.get("closed")]
+        pnl=sum(t.get("pnl_usd",0) for t in closed)
+        last=next(({"side":t["action"],"symbol":"MES","price":t.get("price"),"time":t.get("timestamp","")[:16]} for t in reversed(log.get("trades",[])) if t.get("order_placed")),None)
+        ot=open_trade(log)
+        data={"lastTrade":last,"openTrade":{"side":ot["action"],"price":ot.get("price")} if ot else None,"todayTrades":len(today_ts),"todayPnl":round(pnl,2)}
+    except Exception as e:
+        data={"error":str(e)}
+    return jsonify(data)
+
+@_app.route("/token")
+def route_token():
+    return FlaskResponse(auth.get("session_token") or "", mimetype="text/plain")
+
+@_app.route("/log")
+def route_log():
+    return jsonify(load_log())
+
+@_app.route("/debug")
+def route_debug():
+    d=_diag
+    today=datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    persisted=load_log().get("daily_rejections",{}).get(today,{})
+    merged=dict(persisted)
+    for r,c in d["rejections"].items():
+        merged[r]=max(merged.get(r,0),c)
+    rj=sorted(merged.items(),key=lambda x:-x[1])
+    lines=[
+        "=== BAR COUNTS ===",
+        f"DXLink bars received: 5m={d['bars_received']['5m']} 15m={d['bars_received']['15m']} 1d={d['bars_received']['1day']}",
+        f"Live bars (>11min filter): 5m={d['bars_live']['5m']}",
+        f"on_bar() calls: {d['on_bar_calls']}",
+        f"Last live bar: {d['last_bar_time'] or 'NONE'}",
+        "",
+        "=== REJECTION COUNTS (today, persisted across restarts) ===",
+    ]+([f"{r}: {c}" for r,c in rj] if rj else ["(none yet)"])
+    return FlaskResponse("\n".join(lines), mimetype="text/plain")
+
+@_app.route("/", methods=["GET"])
+def route_dashboard():
+    step=auth["step"]
+    try:
+        if step=="done":
+            html=dashboard_html(load_log())
+        else:
+            msg={"device_code":"<h2>Step 1 of 2: Device Verification</h2><p>Enter the SMS code Tastytrade sent:</p>",
+                 "otp_code":"<h2>Step 2 of 2: Two-Factor Auth</h2><p>Enter the 2FA code:</p>"}.get(step,"<h2>MES Bot — Starting up...</h2>")
+            form=f"""<form method='POST' action='/code'><input name='code' style='font-size:28px;width:160px;text-align:center' autofocus>
+                <br><br><button type='submit' style='font-size:18px;padding:10px 30px'>Submit</button></form>""" if step in ("device_code","otp_code") else ""
+            html=f"<html><body style='font-family:sans-serif;max-width:500px;margin:80px auto;text-align:center'>{msg}{form}</body></html>"
+    except Exception as e:
+        html=f"<pre>Error: {e}</pre>"
+    return FlaskResponse(html, mimetype="text/html")
+
+@_app.route("/code", methods=["POST"])
+def route_code():
+    code=flask_request.form.get("code","").strip()
+    if code: auth["input"]=code; auth["got_input"].set()
+    return FlaskResponse("<html><body style='font-family:sans-serif;max-width:500px;margin:80px auto;text-align:center'><h2>Submitted!</h2><p><a href='/'>Back</a></p></body></html>", mimetype="text/html")
 
 def start_web_server():
-    s=ThreadedHTTPServer(("0.0.0.0",PORT),Handler)
-    threading.Thread(target=s.serve_forever,daemon=True).start()
-    print(f"🌐 Web server on port {PORT}")
+    threading.Thread(target=lambda: _app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False), daemon=True).start()
+    print(f"🌐 Flask web server on port {PORT}")
 
 def start_session_refresh():
     def _loop():
