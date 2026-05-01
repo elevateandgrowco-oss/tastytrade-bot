@@ -747,6 +747,20 @@ h1{{font-size:18px;font-weight:700;margin-bottom:14px}}</style></head><body>
 class Handler(BaseHTTPRequestHandler):
     def log_message(self,*a): pass
     def do_GET(self):
+        if self.path=="/stats":
+            try:
+                log=load_log(); today=datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                today_ts=[t for t in log.get("trades",[]) if t.get("timestamp","").startswith(today)]
+                closed=[t for t in today_ts if t.get("closed")]
+                pnl=sum(t.get("pnl_usd",0) for t in closed)
+                last=next(({"side":t["action"],"symbol":"MES","price":t.get("price"),"time":t.get("timestamp","")[:16]} for t in reversed(log.get("trades",[])) if t.get("order_placed")),None)
+                ot=open_trade(log)
+                data={"lastTrade":last,"openTrade":{"side":ot["action"],"price":ot.get("price")} if ot else None,"todayTrades":len(today_ts),"todayPnl":round(pnl,2)}
+            except Exception as e:
+                data={"error":str(e)}
+            body=json.dumps(data).encode()
+            self.send_response(200); self.send_header("Content-Type","application/json"); self.end_headers()
+            self.wfile.write(body); return
         if self.path=="/token":
             tok=auth.get("session_token") or ""
             self.send_response(200); self.send_header("Content-Type","text/plain"); self.end_headers()
