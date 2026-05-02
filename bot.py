@@ -1165,6 +1165,7 @@ def main():
     print("="*55)
 
     start_web_server()
+    time.sleep(1)  # ensure Flask binds before Railway health check runs
     start_session_refresh()
     start_eod_summary()
 
@@ -1188,12 +1189,18 @@ def main():
     # Start watchdog — texts on silence or disconnect
     threading.Thread(target=watchdog_loop, daemon=True).start()
 
-    # Run DXLink websocket in asyncio (main thread)
+    # Run DXLink websocket in asyncio (main thread) — restart on any crash
     print(f"\n📡 Starting DXLink stream for {streamer_sym}...\n")
-    try:
-        asyncio.run(stream_with_reconnect(streamer_sym))
-    except KeyboardInterrupt:
-        print("\n👋 Bot stopped")
+    while True:
+        try:
+            asyncio.run(stream_with_reconnect(streamer_sym))
+        except KeyboardInterrupt:
+            print("\n👋 Bot stopped")
+            break
+        except Exception as e:
+            print(f"❌ Stream crashed: {e} — restarting in 30s")
+            sms(f"⚠️ MES stream crashed: {e}. Restarting...")
+            time.sleep(30)
 
 if __name__=="__main__":
     main()
