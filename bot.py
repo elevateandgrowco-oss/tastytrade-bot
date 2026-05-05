@@ -29,7 +29,11 @@ TWILIO_FROM  = os.getenv("TWILIO_PHONE", "")
 ALERT_TO     = os.getenv("ALERT_PHONE", os.getenv("OWNER_PHONE", "+14017716184"))
 
 DATA_DIR     = os.getenv("DATA_DIR", ".")
-os.makedirs(DATA_DIR, exist_ok=True)
+try:
+    os.makedirs(DATA_DIR, exist_ok=True)
+except Exception as _e:
+    import sys; print(f"⚠️  makedirs({DATA_DIR}) failed: {_e} — falling back to '.'", flush=True)
+    DATA_DIR = "."
 SESSION_FILE = os.path.join(DATA_DIR, "session.json")
 LOG_FILE     = os.path.join(DATA_DIR, "trades.json")
 
@@ -277,10 +281,25 @@ def open_trade(log):
 def get_headers():
     return {"Content-Type":"application/json","Authorization":auth["session_token"]}
 
+PAPER_TRADING = os.getenv("PAPER_TRADING", "true").lower() != "false"
+
 def get_account():
     r=requests.get(f"{TT_BASE_URL}/customers/me/accounts",headers=get_headers()); r.raise_for_status()
     accounts=r.json()["data"]["items"]
     if not accounts: raise Exception("No accounts found")
+    print(f"  Found {len(accounts)} account(s):")
+    for a in accounts:
+        acct = a["account"]
+        print(f"    {acct['account-number']} | {acct.get('account-type-name','?')} | {acct.get('margin-or-cash','?')} | nickname:{acct.get('nickname','')}")
+    if PAPER_TRADING:
+        # Prefer paper/simulation accounts
+        for a in accounts:
+            acct = a["account"]
+            name = (acct.get("account-type-name","") + acct.get("nickname","")).lower()
+            if any(k in name for k in ["paper","sim","sandbox","practice","virtual"]):
+                print(f"  ✅ Using paper account: {acct['account-number']}")
+                return acct["account-number"]
+        print("  ⚠️  No explicit paper account found — using first Margin account. Verify this is paper!")
     for a in accounts:
         if a["account"].get("margin-or-cash")=="Margin": return a["account"]["account-number"]
     return accounts[0]["account"]["account-number"]
@@ -819,8 +838,13 @@ def route_code():
     return FlaskResponse("<html><body style='font-family:sans-serif;max-width:500px;margin:80px auto;text-align:center'><h2>Submitted!</h2><p><a href='/'>Back</a></p></body></html>", mimetype="text/html")
 
 def start_web_server():
-    threading.Thread(target=lambda: _app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False), daemon=True).start()
-    print(f"🌐 Flask web server on port {PORT}")
+    def _run():
+        try:
+            _app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False)
+        except Exception as e:
+            print(f"❌ Flask failed to start on port {PORT}: {e}", flush=True)
+    threading.Thread(target=_run, daemon=True).start()
+    print(f"🌐 Flask web server on port {PORT}", flush=True)
 
 def start_session_refresh():
     def _loop():
