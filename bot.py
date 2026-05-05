@@ -17,6 +17,14 @@ from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify, Response as FlaskResponse, request as flask_request
 from urllib.parse import parse_qs
 
+try:
+    import anthropic
+    ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+    _anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_KEY) if ANTHROPIC_KEY else None
+except ImportError:
+    _anthropic_client = None
+    ANTHROPIC_KEY = ""
+
 # ── Config ─────────────────────────────────────────────────────────────────────
 TT_BASE_URL  = os.getenv("TT_BASE_URL", "https://api.tastytrade.com")
 TT_USERNAME  = os.getenv("TT_USERNAME", "")
@@ -869,6 +877,62 @@ def start_eod_summary():
             sms(f"📊 MES EOD: {wins}W/{len(closed)-wins}L | P&L: ${pnl:+.2f}" if closed else "📊 MES EOD: No trades today")
     threading.Thread(target=_loop,daemon=True).start()
 
+# ── Claude AI analysis gate ────────────────────────────────────────────────────
+def claude_gate(bull: bool, price: float, e20: float, r3: float, at: float,
+                pdh: float, pdl: float, bias_15m: str, vol_ratio: float) -> dict:
+    """Final AI gate before placing MES order. Returns {"decision": "BUY"/"SHORT"/"SKIP", "confidence": int, "reasoning": str}"""
+    if not _anthropic_client:
+        return {"decision": "BUY" if bull else "SHORT", "confidence": 5, "reasoning": "AI gate skipped — no API key"}
+
+    rules_path = os.path.join(os.path.dirname(__file__), "rules.json")
+    try:
+        with open(rules_path) as f:
+            rules = json.load(f)
+    except Exception:
+        rules = {}
+
+    et = now_et()
+    market_state = {
+        "symbol": "MES",
+        "broker": "Tastytrade",
+        "direction": "LONG" if bull else "SHORT",
+        "price": round(price, 2),
+        "ema20_5m": round(e20, 2) if e20 else None,
+        "rsi3": round(r3, 2) if r3 else None,
+        "atr14_5m": round(at, 4) if at else None,
+        "pdh": round(pdh, 2) if pdh else None,
+        "pdl": round(pdl, 2) if pdl else None,
+        "bias_15m": bias_15m,
+        "volume_ratio": round(vol_ratio, 2) if vol_ratio else None,
+        "time_et": et.strftime("%H:%M"),
+        "day_of_week": et.strftime("%A"),
+    }
+
+    system_prompt = f"""You are an expert MES (Micro E-mini S&P 500) futures day trader using Tastytrade.
+Mechanical safety checks have already passed. Your job: decide BUY (go long), SHORT (go short), or SKIP based on full strategy context.
+Educators: Tom Sosnoff/Tastytrade, Carley Garner, Larry Williams, ICT kill zones, Opening Range Breakout, Thomas Wade, PATs Trading.
+
+STRATEGY RULES:
+{json.dumps(rules, indent=2)[:3000]}
+
+Respond ONLY with valid JSON:
+{{"decision": "BUY" or "SHORT" or "SKIP", "confidence": <1-10>, "tier": "tier1_ideal"/"tier2_good"/"tier3_marginal"/"tier4_skip", "reasoning": "<2-3 sentences>", "key_signals": ["signal1", "signal2"]}}"""
+
+    user_msg = f"MES market state (Tastytrade):\n{json.dumps(market_state, indent=2)}\n\nMechanical checks passed. Should I enter this MES trade?"
+
+    try:
+        resp = _anthropic_client.messages.create(
+            model="claude-haiku-4-5",
+            max_tokens=350,
+            system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
+            messages=[{"role": "user", "content": user_msg}],
+        )
+        return json.loads(resp.content[0].text.strip())
+    except Exception as e:
+        print(f"  ⚠️  Claude gate error: {e} — using mechanical decision")
+        return {"decision": "BUY" if bull else "SHORT", "confidence": 5, "reasoning": f"AI error: {e}"}
+
+
 # ── Core trading logic ─────────────────────────────────────────────────────────
 def on_bar(bars, acct, sym):
     """Called on every completed 5-minute bar. Entry via limit order, exits via market."""
@@ -1050,10 +1114,24 @@ def on_bar(bars, acct, sym):
     tp  = calc_runner_target(bars, entry_price, bull, at)
     qty = calc_contracts(acct, sp)
 
+    # ── Claude AI analysis gate ─────────────────────────────────────────────
+    avg_vol = avgvol(bars, 20) if len(bars) >= 20 else 0
+    vol_ratio = (bars[-1].volume / avg_vol) if avg_vol > 0 else None
+    ai = claude_gate(bull, price, e20, r3, at, pdh or 0, pdl or 0, b15 or "unknown", vol_ratio or 0)
+    print(f"  🧠 Claude: {ai.get('decision')} (conf:{ai.get('confidence')}/10) {ai.get('tier','')}")
+    print(f"     {ai.get('reasoning','')}")
+
+    expected = "BUY" if bull else "SHORT"
+    if ai.get("decision") != expected:
+        print(f"  🧠 AI SAYS SKIP — overriding mechanical pass")
+        sms(f"🧠 MES AI SKIP: {ai.get('reasoning','')[:120]}")
+        return
+
     print(f"\n✅ {'LONG' if bull else 'SHORT'} {qty}ct — LIMIT @ {entry_price:.2f}")
     print(f"   Stop: -{sp:.2f}pts (1 tick beyond setup bar {'low' if bull else 'high'} {setup_bar.low if bull else setup_bar.high:.2f})")
     print(f"   Scalp: {SCALP_TICKS} ticks ({SCALP_TICKS*TICK_SIZE:.2f}pts)  Runner: {tp:.2f}pts")
     print(f"   Limit auto-cancels in {LIMIT_ORDER_TIMEOUT}s if unfilled")
+    print(f"   AI conf:{ai.get('confidence')}/10 tier:{ai.get('tier','')}")
     side = "Buy" if bull else "Sell"
     try:
         oid = place_limit_order(acct, sym, side, qty, entry_price)
@@ -1062,7 +1140,9 @@ def on_bar(bars, acct, sym):
             "atr":round(at,2) if at else None,"bias_15m":b15,
             "ema_slope":round(sl,4) if sl else None,"stop_pts":round(sp,2),"target_pts":round(tp,2),
             "breakeven_triggered":False,"partial_done":False,"trail_high":entry_price,
-            "closed":False,"order_id":oid,"order_placed":True,"order_type":"limit"})
+            "closed":False,"order_id":oid,"order_placed":True,"order_type":"limit",
+            "ai_confidence": ai.get("confidence"), "ai_tier": ai.get("tier"),
+            "ai_reasoning": ai.get("reasoning"), "vol_ratio": round(vol_ratio, 2) if vol_ratio else None})
         save_log(log)
         sms(f"{'📈' if side=='Buy' else '📉'} MES {'LONG' if bull else 'SHORT'} LIMIT {qty}ct @ {entry_price:.2f} | Stop:{sp:.1f}pts Scalp:{SCALP_TICKS}t Runner:{tp:.1f}pts")
     except Exception as e: print(f"❌ Limit order:{e}")

@@ -1,0 +1,497 @@
+{
+  "instrument": "MES",
+  "asset_class": "MICRO_EMINI_FUTURES",
+  "description": "Comprehensive MES (Micro E-mini S&P 500) futures trading rules synthesized from Tom Sosnoff / Tastytrade, Carley Garner (DeCarley Trading), Larry Williams, ICT (Michael Huddleston), Opening Range Breakout (Toby Crabel / Mark Fisher), Thomas Wade, PATs Trading, and Carley Garner risk management. $5/point, 0.25pt tick, CME Globex.",
+
+  "instrument_specs": {
+    "symbol": "MES",
+    "full_name": "Micro E-mini S&P 500 Futures",
+    "exchange": "CME Globex",
+    "contract_multiplier": 5,
+    "tick_size_pts": 0.25,
+    "tick_value_usd": 1.25,
+    "one_point_usd": 5.00,
+    "trading_hours_et": "18:00 Sunday – 17:00 Friday (23hr/day with 15-min maintenance break 17:00-17:15)",
+    "regular_session_et": "09:30–16:15"
+  },
+
+  "market_hours": {
+    "tradeable_window_et": "09:45–15:45",
+    "avoid_open_buffer_minutes": 15,
+    "avoid_close_buffer_minutes": 15,
+    "rationale": "First 15 min post-open: maximum algorithmic positioning noise, wide bid-ask, retail stops running. Last 15 min: MOC order imbalances, thin book. Thomas Wade and Carley Garner both emphasize avoiding these chaos windows."
+  },
+
+  "kill_zones": {
+    "description": "ICT (Michael Huddleston) concept: specific time windows where institutional order flow is highest and momentum setups are most reliable. Only enter new positions during kill zones.",
+    "ny_am_session": {
+      "name": "New York AM Kill Zone",
+      "start_et": "09:30",
+      "end_et": "11:00",
+      "quality": "Tier 1",
+      "rationale": "ICT: London and New York institutional order flow overlap. Highest volume session of the day. Most trend days start here. Fair Value Gaps created during overnight often fill in this window.",
+      "source": "ICT (Michael Huddleston) Inner Circle Trader concepts"
+    },
+    "ny_pm_session": {
+      "name": "New York PM Kill Zone",
+      "start_et": "13:30",
+      "end_et": "15:00",
+      "quality": "Tier 2",
+      "rationale": "ICT: Second institutional push of the day. Algorithmic re-positioning after lunch. Often sets the final daily high or low. Trend continuation setups valid here if aligned with AM bias.",
+      "source": "ICT (Michael Huddleston)"
+    },
+    "dead_zone": {
+      "name": "ICT Lunch Dead Zone / Low Volume Chop",
+      "start_et": "12:00",
+      "end_et": "13:30",
+      "action": "NO_TRADE",
+      "rationale": "ICT: 12:00–13:30 ET is the 'dead zone' — no institutional participants, algos in wait mode, spreads widen, price meanders. EMA signals in this window have very low follow-through. Thomas Wade and PATs Trading also explicitly avoid this period.",
+      "source": "ICT, Thomas Wade, PATs Trading"
+    }
+  },
+
+  "news_blackouts": [
+    {
+      "time_et": "08:30",
+      "events": ["CPI", "NFP", "Jobless Claims", "PPI", "Retail Sales", "GDP"],
+      "block_minutes_before": 10,
+      "block_minutes_after": 10,
+      "rationale": "Carley Garner (DeCarley Trading): Pre-market macro data causes 5-15 point gap-and-reverse moves in MES within seconds of release. Stop orders are triggered in both directions. Any open position into these events is speculation, not trading.",
+      "source": "Carley Garner — A Trader's First Book on Commodities"
+    },
+    {
+      "time_et": "10:00",
+      "events": ["ISM Manufacturing", "ISM Services", "Consumer Confidence", "Existing Home Sales", "JOLTS"],
+      "block_minutes_before": 10,
+      "block_minutes_after": 10,
+      "rationale": "Secondary macro releases — can spike MES 3-8 points in seconds. Carley Garner notes futures traders are more exposed than equity traders due to leverage and 24hr market.",
+      "source": "Carley Garner"
+    },
+    {
+      "time_et": "14:00",
+      "events": ["FOMC Rate Decision", "Fed Statement", "Fed Minutes", "Beige Book"],
+      "block_minutes_before": 10,
+      "block_minutes_after": 10,
+      "rationale": "Tom Sosnoff / Tastytrade: FOMC days are the highest-impact events for SPX products. IV spikes before, collapses after. Avoid directional futures trades on Fed days entirely — wait for the dust to settle post-announcement.",
+      "source": "Tom Sosnoff / Tastytrade, Carley Garner"
+    }
+  ],
+
+  "tom_sosnoff_tastytrade_rules": {
+    "description": "Tom Sosnoff founded Tastytrade on quantitative options research applied to active trading. These MES-relevant rules derive from their research on S&P 500 directional bias.",
+    "trend_filter": {
+      "rule": "Trade with the trend defined by the 21-day EMA on daily MES chart. Price above 21-day EMA = long bias. Price below = short bias. Do not take counter-trend positions without strong confluence.",
+      "note": "Tastytrade uses 21-day EMA (not 20) as their standard trend benchmark for equities and equity futures.",
+      "source": "Tom Sosnoff / Tastytrade daily market analysis"
+    },
+    "fomc_avoidance": {
+      "rule": "Avoid entering new MES positions on Federal Open Market Committee meeting days. IV expansion before the announcement creates adverse fills; IV crush after creates rapid reversals. Both hurt futures directional traders.",
+      "source": "Tastytrade research on FOMC impact on SPX products"
+    },
+    "iv_rank_context": {
+      "rule": "When VIX is above its 52-week average (high IV Rank > 50), price action becomes mean-reverting rather than trending. Reduce position size 25-50% in high-IV environments. When VIX IV Rank < 25, trending strategies work better.",
+      "source": "Tom Sosnoff / Tastytrade — IV Rank concept applied to directional trading"
+    },
+    "put_call_ratio": {
+      "rule": "When equity put-call ratio exceeds 1.0, extreme bearish sentiment often precedes mean-reversion rallies in MES. Use as a soft contrarian indicator — do not fight deeply oversold markets with shorts.",
+      "source": "Tastytrade sentiment research"
+    },
+    "max_contracts_tastytrade": {
+      "rule": "Max 2 MES contracts per trade for accounts under $25,000. The Tastytrade ethos is defined risk with small size — be right and small rather than big and wrong.",
+      "source": "Carley Garner risk rules / Tastytrade position sizing"
+    }
+  },
+
+  "carley_garner_decarley_rules": {
+    "description": "Carley Garner (DeCarley Trading) is a commodity broker and futures educator who has written extensively on trading S&P futures. Her rules emphasize macro awareness and disciplined risk.",
+    "macro_bias_filter": {
+      "rule": "Use 50-day and 200-day moving averages on daily MES chart for macro direction. 50-day above 200-day = bullish macro bias — only take longs or skip shorts on pullbacks. 50-day below 200-day = bearish macro — only shorts or skip longs on bounces.",
+      "golden_cross": "50-day crossing above 200-day (golden cross) = regime change to bull — increase long bias significantly.",
+      "death_cross": "50-day crossing below 200-day (death cross) = regime change to bear — increase short bias.",
+      "source": "Carley Garner — Higher Probability Commodity Trading"
+    },
+    "economic_release_window": {
+      "rule": "Avoid trading 30 minutes before AND 30 minutes after any major economic release. Futures markets reprice instantly; the first 30 minutes post-release are whipsaw territory with no edge.",
+      "source": "Carley Garner — A Trader's First Book on Commodities"
+    },
+    "cot_data": {
+      "rule": "Check weekly Commitment of Traders (COT) report for Large Speculators net position in S&P 500 futures. Extreme net long by large specs = crowded trade = higher reversal risk. Extreme net short = fuel for squeeze rally.",
+      "note": "COT data is released every Friday at 3:30 PM ET for prior Tuesday positions. Use as a macro backdrop, not a timing tool.",
+      "source": "Carley Garner — Higher Probability Commodity Trading"
+    },
+    "stop_placement": {
+      "rule": "Stop loss must be placed beyond the session extreme (today's high for shorts, today's low for longs), not just a fixed-point stop. MES is volatile enough that tight fixed stops get run before the move develops.",
+      "alternative": "For scalp trades, stop = 1 tick beyond setup bar high (for shorts) or low (for longs) — Thomas Wade method.",
+      "source": "Carley Garner risk management rules"
+    },
+    "never_average_losers": {
+      "rule": "NEVER add to a losing MES position. Averaging down in futures is account suicide — the loss can compound with leverage until margin call. One position, one stop, one decision.",
+      "source": "Carley Garner — absolute rule for futures traders"
+    },
+    "october_seasonal": {
+      "note": "S&P futures historically see increased volatility in October (October Effect). Earnings season begins. Be aware of wider ATR and potential for sharp reversals. Reduce size.",
+      "source": "Carley Garner — seasonal tendencies in equity futures"
+    }
+  },
+
+  "larry_williams_rules": {
+    "description": "Larry Williams is a legendary futures trader known for %R indicator, open interest analysis, and seasonal patterns. These rules apply to MES.",
+    "percent_r": {
+      "description": "Williams %R is a momentum oscillator ranging 0 to -100. Unlike RSI, %R reads overbought at 0 and oversold at -100.",
+      "long_setup": "%R below -80 (oversold) and turning up within a bullish trend = strong long entry signal for MES. Price is pulling back to a support zone.",
+      "short_setup": "%R above -20 (overbought) and turning down within a bearish trend = strong short entry signal.",
+      "filter": "Do not use %R overbought as a short signal in a strong uptrend — it will stay overbought for extended periods. Trend must be confirmed by EMA.",
+      "source": "Larry Williams — Long-Term Secrets to Short-Term Trading"
+    },
+    "open_interest_analysis": {
+      "rule": "When MES price is rising BUT open interest is declining = bearish divergence. Longs are closing, not new buyers entering. This precedes reversals. Avoid new longs in this environment.",
+      "rule_2": "When MES price is falling AND open interest is rising = new shorts entering = trend likely to continue. Do not fight this.",
+      "source": "Larry Williams — futures open interest interpretation"
+    },
+    "overbought_oversold_extremes": {
+      "rule": "Larry Williams: in futures, the best setups occur after a 2-3 day directional push when %R reaches extreme. Day 1 of reversal after extreme = highest probability entry.",
+      "application": "If MES has been down 3+ consecutive days and %R < -90, the next bullish confirmation bar on 5m is a high-probability long.",
+      "source": "Larry Williams — LTSTS methodology"
+    },
+    "trade_the_close": {
+      "rule": "Larry Williams emphasizes that market bias for the following day is often set by the last 30 minutes of trading (3:30-4:00 PM ET). Strong close = bullish overnight bias. Weak close = bearish.",
+      "application": "Use prior day's closing action as context for morning directional bias in MES.",
+      "source": "Larry Williams — trading the close pattern"
+    }
+  },
+
+  "ict_rules": {
+    "description": "ICT (Michael Huddleston, Inner Circle Trader) teaches institutional order flow concepts. These are the most relevant for MES futures intraday trading.",
+    "kill_zones": {
+      "ny_am": "09:30–11:00 ET — Tier 1. Best MES setups occur here. Institutional order flow at maximum.",
+      "ny_lunch_dead": "12:00–13:30 ET — NO TRADE. ICT calls this the low volume dead zone. Any signal here is likely to fail or whipsaw.",
+      "ny_pm": "13:30–15:00 ET — Tier 2. Second institutional push. Valid for trend continuation.",
+      "source": "ICT Inner Circle Trader — kill zone methodology"
+    },
+    "fair_value_gaps": {
+      "description": "A Fair Value Gap (FVG) is created when three consecutive candles have a gap between candle 1's high and candle 3's low (bullish FVG) or candle 1's low and candle 3's high (bearish FVG). Price frequently returns to fill the FVG.",
+      "bullish_fvg": "If a bullish FVG exists above current price, it acts as a target zone. If price is IN a bullish FVG and bouncing, it is a valid long entry zone.",
+      "bearish_fvg": "If a bearish FVG exists below current price, it acts as a target zone for shorts. If price is IN a bearish FVG and rejecting, it is a valid short entry zone.",
+      "source": "ICT — Fair Value Gap concept"
+    },
+    "optimal_trade_entry": {
+      "description": "ICT's OTE (Optimal Trade Entry) is a fibonacci retracement of 61.8-79% of the prior swing. This is the highest probability entry zone after a trend impulse.",
+      "rule": "After MES makes a strong impulse move (3+ points in 1-2 bars), wait for a retracement to the 61.8-79% fib zone. Enter in the direction of the original impulse if EMA and 15m bias agree.",
+      "source": "ICT — Optimal Trade Entry methodology"
+    },
+    "liquidity_pools": {
+      "rule": "Price gravitates toward equal highs and equal lows (two or more bars with the same high or low). These are liquidity pools where stop orders cluster. Price WILL sweep these levels before reversing.",
+      "application": "If MES has two bars with the same high, expect price to spike above that level briefly before reversing. Do not enter long right before equal highs — wait for the sweep and confirmation of rejection.",
+      "source": "ICT — liquidity and stop hunting concepts"
+    },
+    "displacement_candles": {
+      "rule": "ICT: A displacement candle is a large, strong-bodied candle that moves price decisively through a level (EMA, key S/R). This confirms institutional participation. A pullback after a bullish displacement is a buy-the-dip opportunity.",
+      "source": "ICT — displacement and mitigation methodology"
+    }
+  },
+
+  "opening_range_breakout_rules": {
+    "description": "Opening Range Breakout (ORB) derived from Toby Crabel's 'Day Trading with Short Term Price Patterns' (1990) and Mark Fisher's ACD Method. One of the most robust intraday futures setups.",
+    "opening_range_period": "09:30–10:00 ET (first 30 minutes of regular session)",
+    "orb_setup": {
+      "orh": "Opening Range High — high of the 09:30-10:00 candle. Primary resistance.",
+      "orl": "Opening Range Low — low of the 09:30-10:00 candle. Primary support.",
+      "long_signal": "Price consolidates below ORH, then breaks above with volume >= 1.5x average. Enter on first pullback to ORH from above OR on the initial breakout bar.",
+      "short_signal": "Price consolidates above ORL, then breaks below with volume >= 1.5x average. Enter on first bounce to ORL from below OR on the initial breakdown bar.",
+      "target": "Project the ORH-ORL range from the breakout point. Minimum target = 1x range. Preferred = 2x range.",
+      "source": "Toby Crabel — Day Trading with Short Term Price Patterns; Mark Fisher — ACD Method"
+    },
+    "volume_requirement": {
+      "rule": "An ORB without volume confirmation is unreliable. Volume on the breakout bar must be >= 1.5x the 20-bar average. Without this, the breakout is likely a false break.",
+      "source": "Toby Crabel ORB methodology"
+    },
+    "failed_breakout": {
+      "rule": "If MES breaks above ORH but reverses back below within 1-2 bars with high volume = failed breakout. This is often a STRONG short signal. The breakout trapped longs who will now be forced to exit, accelerating the move down.",
+      "source": "Mark Fisher ACD Method — failed breakout interpretation"
+    },
+    "no_fading_momentum_orb": {
+      "rule": "Never fade (take the opposite side of) a high-volume ORB in the direction of the 15m trend. If MES breaks above ORH with strong volume and 15m bias is bullish, do NOT short. Wait for exhaustion.",
+      "source": "Toby Crabel, Mark Fisher"
+    },
+    "mes_specific": {
+      "note": "For MES with a $5/point multiplier, a 10-point ORH-ORL range = $50/contract potential target. At 1:1 risk:reward, a 5-point stop = $25 risk. Always check if the R:R is at least 1.5:1 before entering ORB."
+    }
+  },
+
+  "thomas_wade_rules": {
+    "description": "Thomas Wade is a price action educator specializing in EMA pullback setups on intraday charts. His 'second entry' concept is the primary entry pattern for this bot.",
+    "ema_rules": {
+      "period": 20,
+      "timeframe": "5m",
+      "rules": [
+        "Price above EMA(20) = bullish bias on 5m. Look for long setups.",
+        "Price below EMA(20) = bearish bias on 5m. Look for short setups.",
+        "EMA must be SLOPING in the direction of the trade — flat EMA means chop — skip.",
+        "EMA slope: EMA(20) now vs EMA(20) 3 bars ago. Positive slope = bullish. Negative = bearish.",
+        "Do not enter if price is more than 0.5% away from EMA — that is chasing.",
+        "The 5m EMA(20) must agree with the 15m EMA(20) bias for a Tier 1 setup."
+      ],
+      "source": "Thomas Wade"
+    },
+    "second_entry": {
+      "description": "Thomas Wade's primary setup: after an initial impulse move, price pulls back to the EMA, pauses (setup bar), then resumes trend (confirmation bar). This is the 'second entry'.",
+      "rules": [
+        "Setup bar (bars[-2]) must touch or come within 0.3% of EMA(20) — this is the pullback zone.",
+        "Setup bar must close in the upper 67% of its range for longs (bullish close), lower 33% for shorts (bearish close).",
+        "Setup bar range must not exceed 22 ticks (5.5 points) for MES — too wide = too much risk.",
+        "Confirmation bar (bars[-1]) must break above setup bar high (for longs) or below setup bar low (for shorts).",
+        "Entry = setup_bar.high + 0.25 (1 tick) for longs. Entry = setup_bar.low - 0.25 for shorts.",
+        "Do not chase: if price is already more than 4 ticks (1 point) past the entry price, skip.",
+        "Two bars with matching highs (within 0.5pts) = liquidity pool block. Skip longs.",
+        "Two bars with matching lows = skip shorts."
+      ],
+      "source": "Thomas Wade price action methodology"
+    },
+    "signal_bar_quality": {
+      "long_bar": "Bullish signal bar: closes in top 67% of its range. Has a small lower wick (rejection of lower prices). Body at least 50% of total range.",
+      "short_bar": "Bearish signal bar: closes in bottom 33% of its range. Has a small upper wick (rejection of higher prices). Body at least 50% of total range.",
+      "source": "Thomas Wade"
+    }
+  },
+
+  "pats_trading_rules": {
+    "description": "PATs Trading emphasizes trend continuation setups only and explicitly avoids counter-trend trading in strong directional markets.",
+    "rules": [
+      "Trend continuation only: only enter in the direction of the prevailing 15m EMA(20) trend. Do not fade strong trends.",
+      "In a strong trend (price consistently above EMA, EMA steeply sloped), pullbacks to EMA are buy opportunities — not reversal signals.",
+      "No counter-trend entries in strong moves: if MES is making consecutive higher highs on 5m, do not short even if RSI is 'overbought'.",
+      "Inside bar near EMA = valid PATs setup bar. Inside bars show consolidation and energy compression before continuation.",
+      "A doji or pin bar AT the EMA zone = high probability setup bar. The wick showing rejection of the EMA as resistance/support.",
+      "Tight consolidation bars (small range) near EMA = higher probability of a clean, fast breakout on confirmation."
+    ],
+    "source": "PATs Trading methodology"
+  },
+
+  "rsi_rules": {
+    "period": 3,
+    "timeframe": "5m",
+    "description": "RSI(3) is used as a momentum filter. For MES, the RSI is calculated on bars[-1] (setup bar), not the confirmation bar.",
+    "rules": [
+      "For LONG entries: RSI(3) at setup bar should be below 50 — ideally below 40. Price has pulled back (not overbought).",
+      "For SHORT entries: RSI(3) at setup bar should be above 50 — ideally above 60. Price has bounced (not oversold).",
+      "RSI(3) > 80 on a long setup = overextended momentum. SKIP or wait for deeper pullback to EMA.",
+      "RSI(3) < 20 on a short setup = deeply oversold. Avoid adding shorts here — squeeze risk.",
+      "RSI(3) is a timing filter, NOT a standalone signal. Always require price action confirmation (setup + confirmation bars)."
+    ],
+    "source": "Thomas Wade, PATs Trading"
+  },
+
+  "atr_rules": {
+    "period": 14,
+    "timeframe": "5m",
+    "minimum_atr_pts": 2.0,
+    "description": "ATR(14) on 5m chart measures volatility and sizes stops and targets for MES.",
+    "rules": [
+      "ATR < 2.0 points = insufficient volatility for clean MES setups. Skip — choppy, whipsaw environment.",
+      "ATR 2.0-4.0 pts = normal MES volatility. Trade normally.",
+      "ATR > 6.0 pts = high volatility. Widen stops, reduce size. Likely news-driven or FOMC day.",
+      "Stop loss = 1 tick beyond setup bar low (for longs) or high (for shorts). Minimum stop = 0.5 pts.",
+      "Scalp target = 8 ticks = 2.0 pts = $10/contract. Exit 50% here and move stop to breakeven.",
+      "Runner target = 2x ATR from entry OR prior session extreme, whichever comes first."
+    ],
+    "source": "Thomas Wade, Carley Garner"
+  },
+
+  "key_price_levels": {
+    "previous_day_high": {
+      "rule": "Do not go long if entry price is within 1.0 point of PDH. PDH is a major resistance level where overnight supply is clustered. First approach often fails.",
+      "buffer_pts": 1.0,
+      "source": "Thomas Wade, Carley Garner"
+    },
+    "previous_day_low": {
+      "rule": "Do not go short if entry price is within 1.0 point of PDL. PDL is major support where overnight demand is clustered. Shorts near PDL get squeezed.",
+      "buffer_pts": 1.0,
+      "source": "Thomas Wade, Carley Garner"
+    },
+    "round_numbers": {
+      "rule": "MES reacts strongly to round S&P 500 levels: every 50-point increment (4000, 4050, 4100...) is an institutional benchmark. Price often stalls, reverses, or accelerates at these. Do not enter if within 3 points of a 50-pt round number.",
+      "source": "General institutional price level knowledge"
+    },
+    "overnight_highs_lows": {
+      "rule": "Overnight session high (ONH) and overnight session low (ONL) are key levels. A break above ONH at open = bullish expansion day. Price below ONL = bearish breakdown. Use these as early session directional clues.",
+      "source": "ICT overnight session analysis"
+    }
+  },
+
+  "timeframe_hierarchy": {
+    "daily_chart": {
+      "role": "Macro bias. 50-day and 200-day MA determine regime (bull or bear market).",
+      "source": "Carley Garner"
+    },
+    "15m_chart": {
+      "role": "Session bias. EMA(20) on 15m determines bull or bear day. Must align with trade direction for Tier 1.",
+      "source": "Thomas Wade, PATs Trading"
+    },
+    "5m_chart": {
+      "role": "Primary entry chart. Setup bar + confirmation bar pattern identified here.",
+      "source": "Thomas Wade"
+    }
+  },
+
+  "signal_stacking": {
+    "description": "Tier system for MES setups. Higher tiers = higher size. Tier 4 = no entry.",
+    "tier_1_ideal": {
+      "required_conditions": [
+        "Trade occurs during ICT NY AM (09:30-11:00) or NY PM (13:30-15:00) kill zone",
+        "15m EMA(20) bias agrees with trade direction",
+        "5m EMA(20) sloping in trade direction (not flat)",
+        "Setup bar touched or approached EMA(20) zone within 0.3%",
+        "Setup bar closed in upper 67% of range (long) or lower 33% (short)",
+        "Confirmation bar broke setup bar high (long) or low (short)",
+        "RSI(3) below 50 at setup bar (long) or above 50 (short)",
+        "Volume at or above average on confirmation bar",
+        "No pending PDH/PDL within 1.0 point",
+        "Larry Williams %R not at extreme against trade direction",
+        "ATR >= 2.0 points (adequate volatility)"
+      ],
+      "contracts": "Max allowed (up to 2 per Carley Garner/Tastytrade rules)",
+      "confidence_threshold": 7
+    },
+    "tier_2_good": {
+      "required_conditions": [
+        "15m bias aligned",
+        "5m EMA sloping correctly",
+        "Second entry (EMA touch) confirmed",
+        "Setup + confirmation bars valid",
+        "Within kill zone or just outside"
+      ],
+      "missing_allowed": ["Volume weak", "RSI neutral"],
+      "contracts": 1,
+      "confidence_threshold": 6
+    },
+    "tier_3_marginal": {
+      "required_conditions": [
+        "15m bias aligned",
+        "Confirmation bar valid"
+      ],
+      "missing_allowed": ["EMA touch not clean", "RSI not ideal"],
+      "contracts": 1,
+      "confidence_threshold": 5
+    },
+    "tier_4_skip": {
+      "conditions": [
+        "ICT dead zone active (12:00-13:30 ET)",
+        "15m bias against trade direction",
+        "EMA flat or sloping against trade",
+        "Price more than 1% from EMA (chasing)",
+        "ATR below 2.0 pts (chop)",
+        "News blackout window active",
+        "Near PDH/PDL within 1.0 pt",
+        "FOMC day — Tom Sosnoff rule",
+        "Two-bar matching highs (longs) or lows (shorts) blocking",
+        "Setup bar too large (>22 ticks / 5.5 pts)"
+      ],
+      "action": "SKIP — do not enter"
+    }
+  },
+
+  "position_sizing_and_risk": {
+    "max_contracts_per_trade": 2,
+    "rationale": "Carley Garner absolute rule: max 2 MES contracts per trade for retail accounts. Each MES point = $5. A 10-point adverse move on 2 contracts = $100 loss. Manage size before managing trades.",
+    "risk_per_trade_pct": 1.0,
+    "formula": "contracts = floor((account_equity * 0.01) / (stop_pts * 5))",
+    "max_daily_loss_usd": 150,
+    "max_trades_per_day": 3,
+    "never_average_losers": "ABSOLUTE RULE — Carley Garner. Never add to a losing MES position. Exit and re-evaluate.",
+    "stop_beyond_session_extreme": "Stop for trend trades should be beyond today's session extreme (high for shorts, low for longs) per Carley Garner. For EMA scalps, stop is 1 tick beyond setup bar.",
+    "source": "Carley Garner, Tom Sosnoff / Tastytrade"
+  },
+
+  "what_to_avoid": {
+    "hard_blocks": [
+      "ICT dead zone 12:00-13:30 ET — no new entries",
+      "News blackout within 10 min of major economic release",
+      "FOMC meeting days — Tom Sosnoff rule",
+      "ATR < 2.0 pts (chop)",
+      "EMA slope against trade direction",
+      "Price more than 0.5% from EMA (chasing)",
+      "Setup bar too large (>22 ticks = >5.5 pts)",
+      "Near PDH (for longs) or PDL (for shorts) within 1.0 pt",
+      "Two-bar matching highs (longs) or matching lows (shorts)",
+      "Already at max daily loss ($150)",
+      "Already at max trades (3)",
+      "Open position already exists",
+      "Pending limit order already placed"
+    ],
+    "soft_blocks_use_judgment": [
+      "Low volume confirmation bar (ratio < 0.8) — reduce size",
+      "VIX > 25 / High IV Rank (Tom Sosnoff) — reduce size 25-50%",
+      "Larry Williams %R at extreme against trade direction",
+      "EMA slope flat (not against, just flat) — marginal setup",
+      "RSI(3) at extreme (>80 for longs, <20 for shorts)",
+      "Friday afternoon after 2pm ET — positions run into weekend",
+      "Outside of kill zones (mid-morning 11am-noon) — lower probability",
+      "October seasonal — Carley Garner: higher volatility, tighter size",
+      "COT shows extreme speculator positioning against your trade direction"
+    ]
+  },
+
+  "exit_rules": {
+    "stop_loss": {
+      "scalp": "1 tick (0.25 pts) beyond setup bar low (longs) or high (shorts). Minimum 0.5 pts.",
+      "trend": "Beyond session extreme (today's low for longs, today's high for shorts) per Carley Garner.",
+      "source": "Thomas Wade (scalp), Carley Garner (trend)"
+    },
+    "partial_exit": {
+      "trigger": "8 ticks = 2.0 points = $10/contract",
+      "action": "Close 50% at market. Move stop to breakeven on remaining position.",
+      "source": "Thomas Wade, Carley Garner — lock profit, let runner work"
+    },
+    "runner_exit": {
+      "target": "2x ATR from entry, or prior session extreme, whichever comes first",
+      "ema_exit": "If price crosses back through EMA(20) on 5m, close runner at market immediately.",
+      "trail": "After breakeven triggered, trail stop 2.0 pts below highest price reached (longs) or above lowest (shorts)"
+    },
+    "time_exit": {
+      "rule": "No open MES positions after 15:45 ET. Close any runner at market before end of session.",
+      "source": "Carley Garner — never hold MES into settlement without deliberate overnight thesis"
+    }
+  },
+
+  "claude_ai_gate_instructions": {
+    "purpose": "Final AI analysis gate before placing a live MES futures order. All mechanical checks have passed. You are the last line of defense and quality assessor.",
+    "your_role": "Expert MES futures day trader synthesizing Thomas Wade, ICT, Tom Sosnoff, Carley Garner, and Larry Williams methodologies. Mechanical filter approved this trade. Now evaluate quality and confidence.",
+    "decision_framework": {
+      "BUY": "Go long — mechanical checks passed AND setup is Tier 1 or Tier 2. Confidence >= 6/10. ICT kill zone active or strong momentum.",
+      "SHORT": "Go short — mechanical checks passed AND setup is Tier 1 or Tier 2. Confidence >= 6/10.",
+      "SKIP": "Override mechanical pass — setup is marginal, timing is poor, or critical confluence is missing."
+    },
+    "factors_to_evaluate": [
+      "Is this trade inside an ICT kill zone (9:30-11:00 or 13:30-15:00 ET)?",
+      "Is the 15m bias strongly aligned or just barely?",
+      "Is the 5m EMA(20) steeply sloped or flat?",
+      "Did the setup bar cleanly touch the EMA zone (true second entry)?",
+      "Is volume confirming the move or is it suspiciously low?",
+      "Are we near PDH/PDL/round number that could cap the trade?",
+      "What does the overall market context suggest (trending day vs choppy)?",
+      "Is there a Larry Williams %R divergence warning?",
+      "Has there been a recent news catalyst that could cause whipsaw?",
+      "Is ATR elevated (FOMC/news) or compressed (dead zone)?",
+      "Risk:reward — is it at least 1.5:1 after accounting for MES tick size?"
+    ],
+    "skip_triggers": [
+      "ICT dead zone 12:00-13:30 ET — should have been blocked but skip if reached AI gate",
+      "15m bias is against the trade direction",
+      "EMA is flat — no directional energy",
+      "Near PDH (long) or PDL (short) within 1 point",
+      "Volume on confirmation bar is very low (ratio < 0.6)",
+      "RSI(3) extreme (>80 long, <20 short) — chasing an overextended move",
+      "Friday after 2pm ET — no overnight risk for scalp targets that won't be reached",
+      "FOMC day — Tom Sosnoff's hard rule: avoid directional futures",
+      "ATR below 2.0 (choppy conditions — no follow-through)",
+      "Larry Williams %R indicating opposite extreme to trade direction"
+    ],
+    "output_format": {
+      "decision": "BUY | SHORT | SKIP",
+      "confidence": "1-10 integer",
+      "tier": "tier1_ideal | tier2_good | tier3_marginal | tier4_skip",
+      "reasoning": "2-3 sentences maximum. Reference specific educators/rules.",
+      "key_signals": ["2-3 most important signals supporting the decision"]
+    }
+  }
+}
