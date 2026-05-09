@@ -57,7 +57,7 @@ MIN_STOP_PTS       = 0.5
 EMA_PERIOD         = 20
 RSI_PERIOD         = 3
 ATR_PERIOD         = 14
-EMA_PROXIMITY_PCT  = 0.5
+EMA_PROXIMITY_PCT  = 1.5
 NEWS_BLOCK_MIN     = 10         # was 15 — shorter news blackout
 AVOID_OPEN_MINUTES = 15
 AVOID_CLOSE_MINUTES= 15         # was 30 — allow trading until 3:45 PM
@@ -189,8 +189,8 @@ def signal_bar_too_large(bar):
 def signal_bar_quality(bar, bull):
     r = bar.high - bar.low
     if r < TICK_SIZE * 2: return True
-    if bull: return bar.close >= bar.low  + r * 0.67
-    else:    return bar.close <= bar.high - r * 0.67
+    if bull: return bar.close >= bar.low  + r * 0.40
+    else:    return bar.close <= bar.high - r * 0.40
 
 def two_bar_block(bars, bull):
     if len(bars)<2: return False
@@ -208,7 +208,7 @@ def confirmation_candle(bars, bull):
 
 def second_entry_confirmed(bars, e20, bull):
     if len(bars)<2 or e20 is None: return True
-    prev=bars[-2]; zone=e20*0.003
+    prev=bars[-2]; zone=e20*0.015
     return prev.low<=e20+zone if bull else prev.high>=e20-zone
 
 def get_prev_day_levels():
